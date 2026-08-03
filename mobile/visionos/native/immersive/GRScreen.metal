@@ -1,8 +1,10 @@
-//  Draws LÖVE's virtual screen into the immersive drawables.
+//  Draws LÖVE's virtual screen as a world-locked panel in the immersive space.
 //
-//  A fullscreen triangle rather than a quad: three vertices, no vertex buffer,
-//  no index buffer. The extra area outside the viewport is clipped away and
-//  costs nothing, and it avoids the diagonal seam two triangles can show.
+//  World-locked rather than head-locked on purpose: a panel that follows your
+//  head proves nothing about tracking, whereas one that stays put while you
+//  look around proves the device anchor, the per-view transforms and the
+//  projection are all correct together. It is also the presentation the flat
+//  game actually wants in VR -- a screen hanging in the room.
 
 #include <metal_stdlib>
 using namespace metal;
@@ -12,36 +14,38 @@ struct VertexOut {
     float2 uv;
 };
 
-struct ScreenUniforms {
-    // Scales the UVs so the source keeps its aspect ratio inside the target.
-    // Values above 1 letterbox: the shader discards what falls outside.
-    float2 uvScale;
+struct PanelUniforms {
+    float4x4 modelViewProjection;
+    // Half-extents of the panel in metres, so one quad serves any aspect.
+    float2   halfSize;
 };
 
-vertex VertexOut gr_screen_vertex(uint vid [[vertex_id]])
+vertex VertexOut gr_panel_vertex(uint vid [[vertex_id]],
+                                 constant PanelUniforms &u [[buffer(0)]])
 {
-    // (-1,-1) (3,-1) (-1,3) -- covers the viewport with one triangle.
-    const float2 positions[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
-    const float2 uvs[3]       = { float2( 0.0,  1.0), float2(2.0,  1.0), float2( 0.0, -1.0) };
+    // Two triangles as a strip: bottom-left, bottom-right, top-left, top-right.
+    const float2 corners[4] = {
+        float2(-1.0, -1.0), float2(1.0, -1.0),
+        float2(-1.0,  1.0), float2(1.0,  1.0)
+    };
+    // v is flipped against y: Metal textures have their origin at the top,
+    // and the panel's +y is up in world space.
+    const float2 uvs[4] = {
+        float2(0.0, 1.0), float2(1.0, 1.0),
+        float2(0.0, 0.0), float2(1.0, 0.0)
+    };
+
+    float2 c = corners[vid] * u.halfSize;
 
     VertexOut out;
-    out.position = float4(positions[vid], 0.0, 1.0);
+    out.position = u.modelViewProjection * float4(c.x, c.y, 0.0, 1.0);
     out.uv = uvs[vid];
     return out;
 }
 
-fragment float4 gr_screen_fragment(VertexOut in [[stage_in]],
-                                   texture2d<float> screen [[texture(0)]],
-                                   constant ScreenUniforms &u [[buffer(0)]])
+fragment float4 gr_panel_fragment(VertexOut in [[stage_in]],
+                                  texture2d<float> screen [[texture(0)]])
 {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
-
-    // Centre the scaled UVs, then drop anything outside the source. Sampling
-    // with clamp_to_edge instead would smear the border pixels across the
-    // letterbox, which reads as a rendering bug rather than as empty space.
-    float2 uv = (in.uv - 0.5) * u.uvScale + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
-        return float4(0.0, 0.0, 0.0, 1.0);
-
-    return float4(screen.sample(s, uv).rgb, 1.0);
+    return float4(screen.sample(s, in.uv).rgb, 1.0);
 }
