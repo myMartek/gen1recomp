@@ -31,6 +31,15 @@ local DEFAULT_GAMEPAD_BINDINGS = {
   dpup = "up", dpdown = "down", dpleft = "left", dpright = "right",
   a = "a", b = "b",
   start = "start", back = "select",
+  -- The DualSense touchpad click, as A.  It matters on visionOS, where the
+  -- pad is the only input the app gets -- there is no keyboard and no touch
+  -- screen -- and the click is the button a thumb already rests on while the
+  -- d-pad drives the cursor.  Harmless elsewhere: controllers without a
+  -- touchpad never send it, and A keeps its own button regardless.
+  touchpad = "a",
+  -- The other two face buttons.  Unbound they simply did nothing, which on a
+  -- four-button pad reads as broken rather than as deliberate.
+  x = "b", y = "a",
 }
 
 -- left-stick deadzones: press past STICK_ON, release once back under
