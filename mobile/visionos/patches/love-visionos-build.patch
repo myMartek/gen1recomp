@@ -62,6 +62,19 @@ filesystem module where LOVE actually writes. Guessing that from platform
 convention is how a ROM ends up in a directory the engine never looks at,
 which is exactly what happened.
 
+
+Part 6 -- love.xr. A plain table of functions (not a love Module: that would
+mean editing Module::ModuleType, a header everything includes, for no gain)
+exposing the CompositorServices frame loop and ARKit device anchor to Lua:
+beginFrame, views, eyeCanvas, submitFrame.
+
+Lua drives the loop. beginFrame() blocks until the compositor is ready and
+returns the pose for the frame being submitted; the alternative -- a host loop
+calling into Lua -- would render with whatever pose Lua last saw, already
+stale by submission. The per-eye field of view is handed over in OpenXR's
+signed convention, because that is what the voxel mod's VRRig and
+Mat4.fovProjection already consume.
+
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
 --- a/src/common/config.h
@@ -524,6 +537,32 @@ index 18d3660..3867844 100644
  Texture::Texture(love::graphics::Graphics *gfx, id<MTLDevice> device, love::graphics::Texture *base, const Texture::ViewSettings &viewsettings)
  	: love::graphics::Texture(gfx, base, viewsettings)
  {
+diff --git a/src/modules/love/love.cpp b/src/modules/love/love.cpp
+index fa62f4f..a660f5e 100644
+--- a/src/modules/love/love.cpp
++++ b/src/modules/love/love.cpp
+@@ -155,6 +155,9 @@ extern "C"
+ #endif
+ #if defined(LOVE_ENABLE_TIMER)
+ 	extern int luaopen_love_timer(lua_State*);
++#ifdef LOVE_VISIONOS
++	extern int luaopen_love_xr(lua_State*);
++#endif
+ #endif
+ #if defined(LOVE_ENABLE_THREAD)
+ 	extern int luaopen_love_thread(lua_State*);
+@@ -231,6 +234,11 @@ static const luaL_Reg modules[] = {
+ #if defined(LOVE_ENABLE_TIMER)
+ 	{ "love.timer", luaopen_love_timer },
+ #endif
++#ifdef LOVE_VISIONOS
++	// Not gated on a LOVE_ENABLE_ flag: it is not one of LOVE's modules, just
++	// a table of functions for the one platform that has a compositor.
++	{ "love.xr", luaopen_love_xr },
++#endif
+ #if defined(LOVE_ENABLE_TOUCH)
+ 	{ "love.touch", luaopen_love_touch },
+ #endif
 diff --git a/src/modules/window/sdl/Window.cpp b/src/modules/window/sdl/Window.cpp
 index f3b0966..071f5b2 100644
 --- a/src/modules/window/sdl/Window.cpp
@@ -622,3 +661,368 @@ index f3b0966..071f5b2 100644
  
  			try
  			{
+diff --git a/src/modules/xr/wrap_XR.h b/src/modules/xr/wrap_XR.h
+new file mode 100644
+index 0000000..ab42b73
+--- /dev/null
++++ b/src/modules/xr/wrap_XR.h
+@@ -0,0 +1,20 @@
++/**
++ * love.xr -- CompositorServices and ARKit, for visionOS. See wrap_XR.mm.
++ */
++
++#ifndef LOVE_XR_WRAP_XR_H
++#define LOVE_XR_WRAP_XR_H
++
++#include "common/config.h"
++#include "common/runtime.h"
++
++#ifdef LOVE_VISIONOS
++
++extern "C" int luaopen_love_xr(lua_State *L);
++
++/// Handed over by the host once SwiftUI has a layer renderer and ARKit is up.
++extern "C" void love_visionos_setLayerRenderer(void *layerRenderer);
++extern "C" void love_visionos_setWorldTracking(void *provider);
++
++#endif // LOVE_VISIONOS
++#endif // LOVE_XR_WRAP_XR_H
+diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
+new file mode 100644
+index 0000000..4abe986
+--- /dev/null
++++ b/src/modules/xr/wrap_XR.mm
+@@ -0,0 +1,333 @@
++/**
++ * love.xr -- CompositorServices and ARKit, for visionOS.
++ *
++ * This exists so a Lua renderer can draw a stereo frame: ask for a frame, read
++ * one camera per eye, draw into the drawable textures, submit. The voxel mod
++ * already renders per eye for OpenXR on Windows; this is the same shape with a
++ * different backend underneath.
++ *
++ * Two deliberate decisions:
++ *
++ * It is a plain table of functions, not a love Module. A Module would need an
++ * entry in Module::ModuleType, which is a header every part of LOVE includes --
++ * a much larger patch for nothing, since nothing here needs module lifecycle.
++ *
++ * LUA DRIVES THE FRAME LOOP. beginFrame() blocks until the compositor is ready
++ * and returns the pose for the frame being submitted. The alternative -- a
++ * render loop in the host calling into Lua -- would leave LOVE rendering with
++ * whatever head pose it happened to have, and by submission that pose is
++ * already stale. Everything about the timing here follows from that.
++ *
++ * Nothing that crosses into Lua is a pointer: poses and angles come back as
++ * plain tables, matching the discipline lib/VRXR.lua already keeps for OpenXR.
++ */
++
++#include "common/config.h"
++
++#ifdef LOVE_VISIONOS
++
++#include "wrap_XR.h"
++
++#include "common/runtime.h"
++#include "common/Exception.h"
++#include "graphics/Graphics.h"
++#include "graphics/Texture.h"
++#include "graphics/metal/Graphics.h"
++
++#import <ARKit/ARKit.h>
++#import <CompositorServices/CompositorServices.h>
++#import <Metal/Metal.h>
++#import <simd/simd.h>
++
++namespace love
++{
++namespace xr
++{
++
++// ---------------------------------------------------------------- state
++// One frame in flight at a time, which is what the Lua side can express: it
++// calls beginFrame, draws, then submitFrame. Holding these here rather than
++// handing opaque values to Lua keeps cdata out of the mod entirely.
++static cp_layer_renderer_t g_layer = nullptr;
++static ar_world_tracking_provider_t g_worldTracking = nullptr;
++
++static cp_frame_t g_frame = nullptr;
++static cp_drawable_t g_drawable = nullptr;
++static simd_float4x4 g_originFromDevice = matrix_identity_float4x4;
++
++// A love Texture per drawable texture, kept alive across frames. The
++// compositor recycles a small ring of drawables, so this settles at a handful
++// of entries rather than allocating one per frame -- and the mod's own canvas
++// caches key off the object, so handing it a new one each frame would make it
++// rebuild everything sixty times a second.
++static std::map<void *, love::graphics::Texture *> g_eyeTextures;
++
++static love::graphics::metal::Graphics *getMetalGraphics()
++{
++	auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
++	return dynamic_cast<love::graphics::metal::Graphics *>(gfx);
++}
++
++// ---------------------------------------------------------------- C entry
++// Called by the host once SwiftUI hands over the layer renderer.
++extern "C" void love_visionos_setLayerRenderer(void *layerRenderer)
++{
++	g_layer = (__bridge cp_layer_renderer_t) layerRenderer;
++}
++
++extern "C" void love_visionos_setWorldTracking(void *provider)
++{
++	g_worldTracking = (__bridge ar_world_tracking_provider_t) provider;
++}
++
++// ---------------------------------------------------------------- Lua API
++
++static int w_available(lua_State *L)
++{
++	luax_pushboolean(L, g_layer != nullptr);
++	return 1;
++}
++
++static int w_state(lua_State *L)
++{
++	const char *s = "unavailable";
++	if (g_layer != nullptr)
++	{
++		switch (cp_layer_renderer_get_state(g_layer))
++		{
++		case cp_layer_renderer_state_paused:      s = "paused"; break;
++		case cp_layer_renderer_state_running:     s = "running"; break;
++		case cp_layer_renderer_state_invalidated: s = "invalidated"; break;
++		default: s = "unknown"; break;
++		}
++	}
++	lua_pushstring(L, s);
++	return 1;
++}
++
++/**
++ * Blocks until the compositor wants a frame, then returns its presentation
++ * time in seconds, or nil when there is nothing to draw.
++ *
++ * The wait until optimal input time is the point of the whole exercise:
++ * everything sampled after it -- head pose above all -- is as close as it can
++ * be to the moment the frame is actually shown.
++ */
++static int w_beginFrame(lua_State *L)
++{
++	if (g_layer == nullptr)
++		return 0;
++
++	if (cp_layer_renderer_get_state(g_layer) == cp_layer_renderer_state_paused)
++		cp_layer_renderer_wait_until_running(g_layer);
++
++	if (cp_layer_renderer_get_state(g_layer) != cp_layer_renderer_state_running)
++		return 0;
++
++	g_frame = cp_layer_renderer_query_next_frame(g_layer);
++	if (g_frame == nullptr)
++		return 0;
++
++	cp_frame_timing_t timing = cp_frame_predict_timing(g_frame);
++	if (timing == nullptr)
++	{
++		g_frame = nullptr;
++		return 0;
++	}
++
++	cp_frame_start_update(g_frame);
++	cp_frame_end_update(g_frame);
++
++	cp_time_wait_until(cp_frame_timing_get_optimal_input_time(timing));
++
++	cp_frame_start_submission(g_frame);
++	g_drawable = cp_frame_query_drawable(g_frame);
++	if (g_drawable == nullptr)
++	{
++		// Deliberately NOT ending submission: the compositor treats "ended
++		// with nothing presented" as a client error and aborts the process.
++		g_frame = nullptr;
++		return 0;
++	}
++
++	CFTimeInterval presentTime =
++		cp_time_to_cf_time_interval(cp_frame_timing_get_presentation_time(timing));
++
++	if (g_worldTracking != nullptr)
++	{
++		ar_device_anchor_t anchor = ar_device_anchor_create();
++		auto status = ar_world_tracking_provider_query_device_anchor_at_timestamp(
++			g_worldTracking, presentTime, anchor);
++		if (status == ar_device_anchor_query_status_success)
++		{
++			g_originFromDevice = ar_anchor_get_origin_from_anchor_transform(anchor);
++			cp_drawable_set_device_anchor(g_drawable, anchor);
++		}
++	}
++
++	lua_pushnumber(L, (lua_Number) presentTime);
++	return 1;
++}
++
++/**
++ * One camera per eye: position and orientation in world space, plus the four
++ * signed field-of-view angles.
++ *
++ * The angles are derived from the projection matrix rather than read from
++ * cp_view_get_tangents, which is deprecated. They are handed over in OpenXR's
++ * convention -- left and down negative -- because that is what VRRig and
++ * Mat4.fovProjection in the mod already consume, so the mod's camera maths
++ * carries over without a line changed.
++ */
++static int w_views(lua_State *L)
++{
++	if (g_drawable == nullptr)
++		return 0;
++
++	size_t count = cp_drawable_get_view_count(g_drawable);
++	lua_createtable(L, (int) count, 0);
++
++	for (size_t i = 0; i < count; i++)
++	{
++		cp_view_t view = cp_drawable_get_view(g_drawable, i);
++		simd_float4x4 deviceFromView = cp_view_get_transform(view);
++		simd_float4x4 worldFromView = simd_mul(g_originFromDevice, deviceFromView);
++
++		simd_float4x4 proj = cp_drawable_compute_projection(
++			g_drawable, cp_axis_direction_convention_right_up_back, i);
++
++		// Tangents out of the projection: for a standard off-centre frustum
++		// P[0][0] = 2n/(r-l) and P[2][0] = (r+l)/(r-l), which rearranges to
++		// these. atan then gives the angles.
++		float tanRight = ( 1.0f + proj.columns[2][0]) / proj.columns[0][0];
++		float tanLeft  = (-1.0f + proj.columns[2][0]) / proj.columns[0][0];
++		float tanUp    = ( 1.0f + proj.columns[2][1]) / proj.columns[1][1];
++		float tanDown  = (-1.0f + proj.columns[2][1]) / proj.columns[1][1];
++
++		simd_float4 pos = worldFromView.columns[3];
++		simd_quatf q = simd_quaternion(worldFromView);
++
++		lua_createtable(L, 0, 4);
++
++		lua_createtable(L, 0, 2);
++		{
++			lua_createtable(L, 3, 0);
++			lua_pushnumber(L, pos.x); lua_rawseti(L, -2, 1);
++			lua_pushnumber(L, pos.y); lua_rawseti(L, -2, 2);
++			lua_pushnumber(L, pos.z); lua_rawseti(L, -2, 3);
++			lua_setfield(L, -2, "pos");
++
++			lua_createtable(L, 4, 0);
++			lua_pushnumber(L, q.vector.x); lua_rawseti(L, -2, 1);
++			lua_pushnumber(L, q.vector.y); lua_rawseti(L, -2, 2);
++			lua_pushnumber(L, q.vector.z); lua_rawseti(L, -2, 3);
++			lua_pushnumber(L, q.vector.w); lua_rawseti(L, -2, 4);
++			lua_setfield(L, -2, "quat");
++		}
++		lua_setfield(L, -2, "pose");
++
++		lua_createtable(L, 0, 4);
++		lua_pushnumber(L, atanf(tanLeft));  lua_setfield(L, -2, "angleLeft");
++		lua_pushnumber(L, atanf(tanRight)); lua_setfield(L, -2, "angleRight");
++		lua_pushnumber(L, atanf(tanUp));    lua_setfield(L, -2, "angleUp");
++		lua_pushnumber(L, atanf(tanDown));  lua_setfield(L, -2, "angleDown");
++		lua_setfield(L, -2, "fov");
++
++		id<MTLTexture> tex = cp_drawable_get_color_texture(g_drawable, i);
++		lua_pushinteger(L, (lua_Integer) tex.width);  lua_setfield(L, -2, "w");
++		lua_pushinteger(L, (lua_Integer) tex.height); lua_setfield(L, -2, "h");
++
++		lua_rawseti(L, -2, (int) i + 1);
++	}
++
++	return 1;
++}
++
++/**
++ * The drawable's colour texture for one eye, as a love Texture that can be set
++ * as a render target. Zero copies: the renderer draws where the compositor
++ * will read.
++ */
++static int w_eyeCanvas(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (g_drawable == nullptr || index < 0)
++		return 0;
++
++	if ((size_t) index >= cp_drawable_get_texture_count(g_drawable))
++		return 0;
++
++	id<MTLTexture> mtl = cp_drawable_get_color_texture(g_drawable, index);
++	if (mtl == nil)
++		return 0;
++
++	void *key = (__bridge void *) mtl;
++	auto it = g_eyeTextures.find(key);
++	if (it == g_eyeTextures.end())
++	{
++		auto gfx = getMetalGraphics();
++		if (gfx == nullptr)
++			return 0;
++
++		love::graphics::Texture *t = nullptr;
++		luax_catchexcept(L, [&]() { t = gfx->newTextureFromHandle(key); });
++		if (t == nullptr)
++			return 0;
++
++		g_eyeTextures[key] = t;
++		it = g_eyeTextures.find(key);
++	}
++
++	luax_pushtype(L, it->second);
++	return 1;
++}
++
++static int w_submitFrame(lua_State *L)
++{
++	if (g_frame == nullptr || g_drawable == nullptr)
++		return 0;
++
++	auto gfx = getMetalGraphics();
++	if (gfx != nullptr)
++		gfx->flushBatchedDraws();
++
++	// The compositor needs a command buffer of its own to schedule the
++	// present against; LOVE's is already committed by the time we get here.
++	id<MTLDevice> device = MTLCreateSystemDefaultDevice();
++	id<MTLCommandQueue> queue = [device newCommandQueue];
++	id<MTLCommandBuffer> cmd = [queue commandBuffer];
++
++	cp_drawable_encode_present(g_drawable, cmd);
++	[cmd commit];
++
++	cp_frame_end_submission(g_frame);
++
++	g_frame = nullptr;
++	g_drawable = nullptr;
++
++	luax_pushboolean(L, true);
++	return 1;
++}
++
++static const luaL_Reg functions[] =
++{
++	{ "available",   w_available   },
++	{ "state",       w_state       },
++	{ "beginFrame",  w_beginFrame  },
++	{ "views",       w_views       },
++	{ "eyeCanvas",   w_eyeCanvas   },
++	{ "submitFrame", w_submitFrame },
++	{ 0, 0 }
++};
++
++extern "C" int luaopen_love_xr(lua_State *L)
++{
++	lua_newtable(L);
++	luax_register(L, nullptr, functions);
++	return 1;
++}
++
++} // xr
++} // love
++
++#endif // LOVE_VISIONOS
