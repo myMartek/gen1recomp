@@ -47,6 +47,27 @@ exactly as on iOS.
 
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
+
+Part 4 -- adopting textures LOVE did not create. metal::Texture gains a
+constructor that takes an existing id<MTLTexture>, and metal::Graphics a
+newTextureFromHandle() that wraps one as a render target. This is what lets
+the voxel mod draw straight into CompositorServices drawables instead of into
+its own canvases followed by a copy.
+
+No ownership flag: under ARC, assigning retains and the destructor's
+texture = nil releases only our reference, so sharing is already safe. No MSAA
+companion either -- a drawable arrives resolved, and allocating a private MSAA
+texture for one we do not own would quietly double memory the compositor has
+already budgeted. And no updateGraphicsMemorySize(), because counting a
+drawable would make love.graphics.getStats() report memory this process never
+allocated.
+
+The Metal -> LOVE pixel-format mapping is deliberately not exhaustive. An
+unrecognised format throws rather than guessing: a wrong guess would produce
+silently incorrect colours, which is far harder to notice than a failure.
+
+diff --git a/src/common/config.h b/src/common/config.h
+index e52e220..c94ca0e 100644
 --- a/src/common/config.h
 +++ b/src/common/config.h
 @@ -131,6 +131,15 @@
@@ -186,10 +207,10 @@ index 50930f1..0e62945 100644
  			if (r == RENDERER_METAL)
  				std::tie(instance, err) = metal::createInstance();
 diff --git a/src/modules/graphics/metal/Graphics.h b/src/modules/graphics/metal/Graphics.h
-index c7331ba..d1615e7 100644
+index c7331ba..0c4c449 100644
 --- a/src/modules/graphics/metal/Graphics.h
 +++ b/src/modules/graphics/metal/Graphics.h
-@@ -66,6 +66,11 @@ class Graphics final : public love::graphics::Graphics
+@@ -66,6 +66,15 @@ class Graphics final : public love::graphics::Graphics
  
  	void backbufferChanged(const BackbufferSettings &settings) override;
  	bool setMode(void *context, const BackbufferSettings &settings) override;
@@ -198,10 +219,14 @@ index c7331ba..d1615e7 100644
 +	// (visionOS). Null otherwise. Returned as void* so this header stays
 +	// includable from plain C++.
 +	void *getVirtualScreenTexture() const;
++
++	// Wraps an MTLTexture owned by someone else (a CompositorServices
++	// drawable) as a love Texture that can be used as a render target.
++	love::graphics::Texture *newTextureFromHandle(void *mtlTexture);
  	void unSetMode() override;
  
  	void setActive(bool active) override;
-@@ -221,6 +226,13 @@ class Graphics final : public love::graphics::Graphics
+@@ -221,6 +230,13 @@ class Graphics final : public love::graphics::Graphics
  
  	CAMetalLayer *metalLayer;
  	id<CAMetalDrawable> activeDrawable;
@@ -216,7 +241,7 @@ index c7331ba..d1615e7 100644
  
  	uint32 dirtyRenderState;
 diff --git a/src/modules/graphics/metal/Graphics.mm b/src/modules/graphics/metal/Graphics.mm
-index c8d5b18..4b89657 100644
+index c8d5b18..6ec40fc 100644
 --- a/src/modules/graphics/metal/Graphics.mm
 +++ b/src/modules/graphics/metal/Graphics.mm
 @@ -276,6 +276,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
@@ -300,10 +325,50 @@ index c8d5b18..4b89657 100644
  	metalLayer.device = device;
  	metalLayer.pixelFormat = isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
  
-@@ -556,6 +619,11 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -556,6 +619,51 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	return true;
  }}
  
++// Metal -> LOVE, for the handful of colour formats CompositorServices
++// actually hands out. Deliberately not exhaustive: an unknown format here
++// means a drawable we do not understand, and guessing at it would produce
++// silently wrong colours rather than an error.
++static love::PixelFormat lovePixelFormatFromMTL(MTLPixelFormat fmt)
++{
++	switch (fmt)
++	{
++	case MTLPixelFormatBGRA8Unorm:      return love::PIXELFORMAT_BGRA8_UNORM;
++	case MTLPixelFormatBGRA8Unorm_sRGB: return love::PIXELFORMAT_BGRA8_sRGB;
++	case MTLPixelFormatRGBA8Unorm:      return love::PIXELFORMAT_RGBA8_UNORM;
++	case MTLPixelFormatRGBA8Unorm_sRGB: return love::PIXELFORMAT_RGBA8_sRGB;
++	case MTLPixelFormatRGBA16Float:     return love::PIXELFORMAT_RGBA16_FLOAT;
++	default:                            return love::PIXELFORMAT_UNKNOWN;
++	}
++}
++
++love::graphics::Texture *Graphics::newTextureFromHandle(void *mtlTexture)
++{ @autoreleasepool {
++	id<MTLTexture> mtl = (__bridge id<MTLTexture>) mtlTexture;
++	if (mtl == nil)
++		return nullptr;
++
++	// Describe the incoming texture rather than requesting one: width, height
++	// and format all come from what Metal already made.
++	love::graphics::Texture::Settings settings;
++	settings.width = (int) mtl.width;
++	settings.height = (int) mtl.height;
++	settings.renderTarget = true;
++	settings.readable.set(true);
++	settings.mipmaps = love::graphics::Texture::MIPMAPS_NONE;
++	settings.msaa = 1;
++	settings.dpiScale = 1.0f;
++	settings.format = lovePixelFormatFromMTL(mtl.pixelFormat);
++	if (settings.format == love::PIXELFORMAT_UNKNOWN)
++		throw love::Exception("Unsupported Metal pixel format for an adopted texture.");
++
++	return new Texture(this, device, mtl, settings);
++}}
++
 +void *Graphics::getVirtualScreenTexture() const
 +{
 +	return (__bridge void *) virtualScreen;
@@ -312,7 +377,7 @@ index c8d5b18..4b89657 100644
  void Graphics::unSetMode()
  { @autoreleasepool {
  	if (!isCreated())
-@@ -570,6 +638,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -570,6 +678,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	created = false;
  	metalLayer = nil;
  	activeDrawable = nil;
@@ -320,7 +385,7 @@ index c8d5b18..4b89657 100644
  }}
  
  void Graphics::setActive(bool enable)
-@@ -661,7 +730,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -661,7 +770,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  		const auto &rts = states.back().renderTargets;
  		if (rts.getFirstTarget().texture.get() == nullptr)
  		{
@@ -329,7 +394,7 @@ index c8d5b18..4b89657 100644
  			{
  				// This is reset to YES after each frame.
  				// TODO: Does setting this reallocate memory?
-@@ -671,16 +740,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -671,16 +780,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  				activeDrawable = [metalLayer nextDrawable];
  			}
  
@@ -350,7 +415,7 @@ index c8d5b18..4b89657 100644
  				passDesc.colorAttachments[0].resolveTexture = nil;
  			}
  
-@@ -1694,8 +1765,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1694,8 +1805,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	id<MTLBuffer> screenshotbuffer = nil;
  
@@ -363,7 +428,7 @@ index c8d5b18..4b89657 100644
  
  	if (!pendingScreenshotCallbacks.empty())
  	{
-@@ -1707,7 +1780,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1707,7 +1820,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  		auto blitencoder = useBlitEncoder();
  
@@ -372,7 +437,7 @@ index c8d5b18..4b89657 100644
  						 sourceSlice:0
  						 sourceLevel:0
  						sourceOrigin:MTLOriginMake(0, 0, 0)
-@@ -1732,6 +1805,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1732,6 +1845,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	if (cmd != nil && activeDrawable != nil)
  		[cmd presentDrawable:activeDrawable];
@@ -381,6 +446,63 @@ index c8d5b18..4b89657 100644
  
  	submitCommandBuffer(SUBMIT_DONE);
  
+diff --git a/src/modules/graphics/metal/Texture.h b/src/modules/graphics/metal/Texture.h
+index f83844b..b2c21dd 100644
+--- a/src/modules/graphics/metal/Texture.h
++++ b/src/modules/graphics/metal/Texture.h
+@@ -39,6 +39,12 @@ class Texture final : public love::graphics::Texture
+ 
+ 	Texture(love::graphics::Graphics *gfx, id<MTLDevice> device, const Settings &settings, const Slices *data);
+ 	Texture(love::graphics::Graphics *gfx, id<MTLDevice> device, love::graphics::Texture *base, const Texture::ViewSettings &viewsettings);
++
++	// Adopts an MTLTexture this object did NOT create -- a CompositorServices
++	// drawable. The settings must describe the incoming texture accurately;
++	// nothing here validates that, because there is nothing to validate
++	// against without duplicating Metal's own descriptor.
++	Texture(love::graphics::Graphics *gfx, id<MTLDevice> device, id<MTLTexture> adopted, const Settings &settings);
+ 	virtual ~Texture();
+ 
+ 	void copyFromBuffer(love::graphics::Buffer *source, size_t sourceoffset, int sourcewidth, size_t size, int slice, int mipmap, const Rect &rect) override;
+diff --git a/src/modules/graphics/metal/Texture.mm b/src/modules/graphics/metal/Texture.mm
+index 18d3660..3867844 100644
+--- a/src/modules/graphics/metal/Texture.mm
++++ b/src/modules/graphics/metal/Texture.mm
+@@ -214,6 +214,35 @@ static MTLTextureType getMTLTextureType(TextureType type, int msaa)
+ 	setSamplerState(samplerState);
+ }}
+ 
++Texture::Texture(love::graphics::Graphics *gfxbase, id<MTLDevice> device, id<MTLTexture> adopted, const Settings &settings)
++	: love::graphics::Texture(gfxbase, settings, nullptr)
++{ @autoreleasepool {
++	// Adopting rather than allocating: this is a CompositorServices drawable,
++	// which belongs to the compositor and is recycled frame to frame. Nothing
++	// is created here and nothing may be released.
++	// ARC makes sharing safe without an ownership flag: assigning retains, and
++	// the destructor's `texture = nil` releases only OUR reference. The
++	// compositor keeps its own for as long as the drawable lives.
++	texture = adopted;
++
++	if (texture == nil)
++		throw love::Exception("Cannot adopt a null Metal texture.");
++
++	// No MSAA path: a drawable is handed over already resolved, and allocating
++	// a private MSAA companion for a texture we do not own would quietly
++	// double the memory the compositor is already budgeting.
++	actualMSAASamples = 1;
++
++	if (!debugName.empty())
++		texture.label = @(debugName.c_str());
++
++	// Deliberately no updateGraphicsMemorySize(): the compositor's drawables
++	// are not ours, and counting them would make love.graphics.getStats()
++	// report memory this process did not allocate.
++
++	setSamplerState(samplerState);
++}}
++
+ Texture::Texture(love::graphics::Graphics *gfx, id<MTLDevice> device, love::graphics::Texture *base, const Texture::ViewSettings &viewsettings)
+ 	: love::graphics::Texture(gfx, base, viewsettings)
+ {
 diff --git a/src/modules/window/sdl/Window.cpp b/src/modules/window/sdl/Window.cpp
 index f3b0966..071f5b2 100644
 --- a/src/modules/window/sdl/Window.cpp
