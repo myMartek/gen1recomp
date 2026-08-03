@@ -72,6 +72,8 @@ struct GRLauncherView: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var loveStatus = "virtual screen: waiting for LÖVE…"
+    @State private var showRomPicker = false
+    @State private var romMessage: String = ""
 
     var body: some View {
         VStack(spacing: 16) {
@@ -85,13 +87,23 @@ struct GRLauncherView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            Button(action: toggle) {
-                Text(model.immersiveState == .open ? "Leave VR" : "Enter VR")
-                    .font(.title2)
-                    .frame(maxWidth: 260)
-                    .padding(.vertical, 6)
+            HStack(spacing: 16) {
+                Button(action: toggle) {
+                    Text(model.immersiveState == .open ? "Leave VR" : "Enter VR")
+                        .frame(maxWidth: 180)
+                }
+                .disabled(model.immersiveState == .inTransition)
+
+                Button("Import ROM…") { showRomPicker = true }
             }
-            .disabled(model.immersiveState == .inTransition)
+            .font(.title3)
+
+            if !romMessage.isEmpty {
+                Text(romMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
 
             Text(loveStatus)
                 .font(.system(size: 15, design: .monospaced))
@@ -109,7 +121,17 @@ struct GRLauncherView: View {
                     }
                 }
         }
-        .padding(48)
+        .padding(24)
+        .fileImporter(isPresented: $showRomPicker,
+                      allowedContentTypes: GRRomImport.contentTypes,
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first { romMessage = GRRomImport.accept(url) }
+            case .failure(let error):
+                romMessage = "Import cancelled: \(error.localizedDescription)"
+            }
+        }
         .task {
             // LÖVE comes up as soon as the app does, independently of which
             // presentation is showing: both the window and the immersive space
@@ -176,9 +198,13 @@ struct GRLauncherView: View {
             model.immersiveState = .open
             model.wantsImmersiveOnLaunch = true
             model.markImmersiveSessionStarted()
-            // Get the flat window out of the way once the world is up. It is
-            // not gone for good: leaving immersion brings it straight back.
-            dismissWindow(id: GRAppModel.launcherWindowID)
+            // The window deliberately STAYS. visionOS composites it natively,
+            // at full resolution, with correct per-eye reprojection -- a
+            // hand-drawn quad in the immersive space cannot match that, and
+            // the attempt looked exactly as bad as it was: soft, different in
+            // each eye, and fringing at the edges as the head moved.
+            // It gets dismissed again once the immersive space has real world
+            // geometry that justifies taking the screen over.
         case .userCancelled, .error:
             // The space did not open, so do not persist a mode the app cannot
             // actually come back to -- otherwise a one-off failure makes every
@@ -211,6 +237,10 @@ struct GRApp: App {
         ImmersiveSpace(id: "world") {
             GRImmersiveContent(model: model)
         }
-        .immersionStyle(selection: .constant(.full), in: .full)
+        // Mixed while the immersive space has nothing of its own to show.
+        // Full immersion today would replace the room with black and leave the
+        // window floating in a void, which is worse in every way than leaving
+        // the room visible. This becomes .full when the voxel world renders.
+        .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }
 }

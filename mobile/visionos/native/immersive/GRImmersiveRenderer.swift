@@ -166,7 +166,9 @@ final class GRImmersiveRenderer {
             pass.colorAttachments[0].storeAction = .store
             // Near-black rather than magenta now that there is real content:
             // this is the room around the panel, and it should not glow.
-            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.02, green: 0.02, blue: 0.04, alpha: 1.0)
+            // Fully transparent: in mixed immersion anything opaque here would
+            // paint over the room the player is standing in.
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
 
             // The depth attachment is NOT optional. A drawable carries one per
             // view and the compositor reprojects against it; submitting a frame
@@ -185,7 +187,14 @@ final class GRImmersiveRenderer {
 
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
 
-            if let screen,
+            // The panel is no longer drawn. visionOS composites the app's own
+            // window natively and gets both the resolution and the per-eye
+            // reprojection right; drawing it by hand got both wrong. The
+            // machinery stays because the voxel mod will need in-world
+            // geometry -- CompositorServices has no quad layer -- but nothing
+            // should use it to show a flat screen.
+            if false,
+               let screen,
                let pipeline = pipeline(for: target.pixelFormat,
                                        depth: depthTexture?.pixelFormat ?? .invalid),
                index < drawable.views.count {
