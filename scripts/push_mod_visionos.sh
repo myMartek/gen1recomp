@@ -30,9 +30,12 @@ say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 BUNDLE_ID="${GEN1_VISIONOS_BUNDLE_ID:-com.gen1recomp.xr}"
-# Must match conf.lua's t.identity -- that is what LÖVE appends to the app's
-# Documents dir to form the save directory.
+# Must match conf.lua's t.identity. LÖVE appends it to Application Support --
+# NOT to Documents: on Apple platforms COMMONPATH_APP_SAVEDIR resolves from
+# COMMONPATH_USER_APPDATA. Getting this wrong puts files where the engine
+# never looks and the game reports nothing imported.
 IDENTITY="${POKEPORT_IDENTITY:-pokemon-love2d}"
+SAVE_ROOT="Library/Application Support/$IDENTITY"
 
 MOD_DIR=""; ROM=""; EXTRA=""; LAUNCH=false
 while [ $# -gt 0 ]; do
@@ -88,14 +91,16 @@ if [ -n "$MOD_DIR" ]; then
   (cd "$MOD_DIR" && tar --exclude='.git' --exclude='.github' --exclude='*.dll' \
        --exclude='__pycache__' -cf - .) | (cd "$STAGE" && tar -xf -)
   say "staged $(find "$STAGE" -type f | wc -l | tr -d ' ') files (.git excluded)"
-  push "$STAGE" "Documents/$IDENTITY/mods/$MOD_ID"
+  push "$STAGE" "$SAVE_ROOT/mods/$MOD_ID"
 fi
 
 # The ROM and any loose file land in Documents/, where GRBootstrap's
 # activation sweep moves them into the save dir on the next foreground --
 # the same path the iOS build already uses. Nothing here ever enters the repo.
-[ -n "$ROM" ]   && { [ -f "$ROM" ]   || fail "no such file: $ROM";   push "$ROM" "Documents/"; }
-[ -n "$EXTRA" ] && { [ -f "$EXTRA" ] || fail "no such file: $EXTRA"; push "$EXTRA" "Documents/"; }
+# The importer scans the save directory and prefers picked_rom.gb, so a ROM
+# goes straight there under that name rather than relying on a sweep.
+[ -n "$ROM" ]   && { [ -f "$ROM" ]   || fail "no such file: $ROM";   push "$ROM" "$SAVE_ROOT/picked_rom.gb"; }
+[ -n "$EXTRA" ] && { [ -f "$EXTRA" ] || fail "no such file: $EXTRA"; push "$EXTRA" "$SAVE_ROOT/"; }
 
 [ -n "$MOD_DIR$ROM$EXTRA" ] || fail "nothing to push (try --help)"
 

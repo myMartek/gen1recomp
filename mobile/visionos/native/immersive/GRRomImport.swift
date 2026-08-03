@@ -15,14 +15,19 @@ import UniformTypeIdentifiers
 
 enum GRRomImport {
 
-    /// `Documents/<identity>` -- LÖVE's save directory, and what
-    /// love.filesystem.getDirectoryItems("") enumerates. The identity has to
-    /// match conf.lua's t.identity.
+    /// LÖVE's save directory: `Library/Application Support/<identity>`.
+    ///
+    /// NOT Documents. On Apple platforms LÖVE resolves COMMONPATH_APP_SAVEDIR
+    /// from COMMONPATH_USER_APPDATA, which is Application Support
+    /// (Filesystem.cpp; apple::USER_DIRECTORY_APPSUPPORT), and appends the
+    /// identity directly because the game is fused. Assuming the iOS
+    /// Documents convention instead put a ROM somewhere the engine never
+    /// looks, and it reported "no ROM imported" while the file sat there.
     static var saveDirectory: URL? {
-        guard let docs = FileManager.default.urls(for: .documentDirectory,
-                                                  in: .userDomainMask).first
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                     in: .userDomainMask).first
         else { return nil }
-        return docs.appendingPathComponent("pokemon-love2d", isDirectory: true)
+        return support.appendingPathComponent("pokemon-love2d", isDirectory: true)
     }
 
     static var romPresent: Bool {
