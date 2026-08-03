@@ -1,5 +1,5 @@
 Make LÖVE build for visionOS, render without a presentable layer, and boot
-from a host that owns @main.
+from a host that owns @main and its main thread.
 
 Part 1 -- building at all. visionOS defines TARGET_OS_IPHONE, so config.h
 takes the LOVE_IOS branch and the iOS backend compiles, which is what we want:
@@ -16,29 +16,34 @@ Metal, the iOS filesystem layout, the SDL3 UIKit path. Three things stop it:
      everywhere except visionOS. Worth upstreaming on its own: it makes "a
      platform with no OpenGL backend" expressible, which is a gap today.
 
-Part 2 -- rendering with nowhere to present. A fully immersive visionOS app
-has no CAMetalLayer; frames go to CompositorServices drawables and the flat 2D
-image becomes a texture shown in a window or in-world. metal::Graphics::setMode
-now accepts a null context and stands an offscreen texture in for the drawable.
-Render passes, MSAA resolve and screenshot readback keep working against it;
-only presentDrawable is skipped. The texture is MTLStorageModeShared so the
-host can read it back without staging through a blit -- unified memory makes
-that free on Apple GPUs.
+Part 2 -- rendering with nowhere to present. A fully immersive visionOS app has
+no CAMetalLayer; frames go to CompositorServices drawables and the flat 2D
+image becomes a texture the host shows in a window or in-world.
+metal::Graphics::setMode accepts a null context and stands an offscreen texture
+in for the drawable. Render passes, MSAA resolve and screenshot readback keep
+working against it; only presentDrawable is skipped. MTLStorageModeShared so
+the host can read it back without a staging blit -- free on unified memory.
 
-This is a RUNTIME choice, not an #ifdef, and that matters: the flat visionOS
-build still presents through SDL's layer exactly as on iOS and must keep
-working. Window.cpp consults love_visionos_getHeadless().
+Part 3 -- booting from a host that owns @main AND the main thread.
+love_visionos_boot() runs LÖVE without a main(); LOVE_NO_MAIN suppresses
+LÖVE's main() and SDL_main.h's takeover with it (SDL_MAIN_HANDLED), which
+otherwise leaves an undefined _SDL_main.
 
-Part 3 -- booting from a host that owns @main. love_visionos_boot() runs LÖVE
-without main(), for a SwiftUI shell that has its own entry point; LOVE_NO_MAIN
-suppresses LÖVE's main() and, with it, SDL_main.h's takeover
-(SDL_MAIN_HANDLED), which otherwise leaves an undefined _SDL_main.
+The substantial part is that Window::setWindow gets a headless path that
+creates NO SDL window at all. This is not an optimisation. SDL's UIKit backend
+touches UIApplication during both video init and window creation, and
+BoardServices asserts a main-run-loop barrier at each -- so with LÖVE on a
+thread of its own, which it must be for the host to keep its main thread for
+SwiftUI and CompositorServices, any of it traps. Everything the normal path
+does after that point exists to create, place, raise and describe an SDL
+window; none of it applies. The graphics backend is configured directly
+against a null context instead. love_visionos_prepareOnMainThread() still
+brings SDL's video and event subsystems up on the main thread first, so LÖVE's
+own SDL_InitSubSystem is a refcount bump that touches nothing.
 
-love_visionos_prepareOnMainThread() exists because SDL's video init reaches
-into UIKit and BoardServices asserts a main-run-loop barrier there. It is
-necessary but NOT sufficient: SDL's window creation calls UIKit too and traps
-the same way, so LÖVE cannot yet run on a thread of its own while SDL owns a
-window.
+All of this is gated on love_visionos_getHeadless(), a runtime flag rather than
+an #ifdef, so the flat visionOS build keeps presenting through SDL's layer
+exactly as on iOS.
 
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
@@ -377,7 +382,7 @@ index c8d5b18..4b89657 100644
  	submitCommandBuffer(SUBMIT_DONE);
  
 diff --git a/src/modules/window/sdl/Window.cpp b/src/modules/window/sdl/Window.cpp
-index f3b0966..30f6e1f 100644
+index f3b0966..071f5b2 100644
 --- a/src/modules/window/sdl/Window.cpp
 +++ b/src/modules/window/sdl/Window.cpp
 @@ -61,6 +61,11 @@
@@ -392,7 +397,68 @@ index f3b0966..30f6e1f 100644
  namespace love
  {
  namespace window
-@@ -667,6 +672,20 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
+@@ -476,6 +481,60 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
+ 	if (graphics.get() && graphics->isRenderTargetActive())
+ 		throw love::Exception("love.window.setMode cannot be called while a render target is active in love.graphics.");
+ 
++#ifdef LOVE_VISIONOS
++	// Headless: there is no window to make, and crucially no SDL window may be
++	// made from here at all. SDL's UIKit backend touches UIApplication during
++	// both video init and window creation, and BoardServices asserts a
++	// main-run-loop barrier on each -- so with LOVE running on a thread of its
++	// own (which it must, so the host keeps its main thread for SwiftUI and
++	// CompositorServices) any of that traps.
++	//
++	// Everything below this point in the normal path exists to create, place,
++	// raise and describe an SDL window. None of it applies. The graphics
++	// backend is configured directly against a null context and renders into
++	// an offscreen texture the host presents itself.
++	if (love_visionos_getHeadless())
++	{
++		WindowSettings hf;
++		if (settings)
++			hf = *settings;
++
++		windowWidth  = std::max(width, 1);
++		windowHeight = std::max(height, 1);
++		pixelWidth   = windowWidth;
++		pixelHeight  = windowHeight;
++
++		this->settings = hf;
++		this->settings.fullscreen = false;
++		this->settings.resizable = false;
++		this->settings.borderless = true;
++		this->settings.usedpiscale = false;
++		windowRenderer = graphics != nullptr ? graphics->getRenderer() : graphics::RENDERER_NONE;
++		open = true;
++
++		if (graphics.get())
++		{
++			graphics::Graphics::BackbufferSettings backbufferSettings;
++			backbufferSettings.width = windowWidth;
++			backbufferSettings.height = windowHeight;
++			backbufferSettings.pixelWidth = pixelWidth;
++			backbufferSettings.pixelHeight = pixelHeight;
++			backbufferSettings.stencil = hf.stencil;
++			backbufferSettings.depth = hf.depth;
++			backbufferSettings.msaa = hf.msaa;
++
++			if (graphics->isCreated())
++				graphics->backbufferChanged(backbufferSettings);
++			else
++				graphics->setMode(nullptr, backbufferSettings);
++
++			this->settings.msaa = graphics->getBackbufferMSAA();
++		}
++
++		return true;
++	}
++#endif
++
+ 	auto renderer = graphics != nullptr ? graphics->getRenderer() : graphics::RENDERER_NONE;
+ 
+ 	if (isOpen())
+@@ -667,6 +726,20 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
  			if (renderer == graphics::RENDERER_METAL && metalView)
  				context = (void *) SDL_Metal_GetLayer(metalView);
  #endif

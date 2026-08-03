@@ -20,6 +20,13 @@ final class GRImmersiveRenderer {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
 
+    /// Built on first use, because it needs the drawable's pixel format and
+    /// that is not known until a frame exists.
+    private var screenPipeline: MTLRenderPipelineState?
+    private var pipelineFormat: MTLPixelFormat = .invalid
+
+    private struct ScreenUniforms { var uvScale: SIMD2<Float> }
+
     init?(_ layerRenderer: LayerRenderer) {
         self.layerRenderer = layerRenderer
         // Take the device the compositor gave us rather than
@@ -49,6 +56,23 @@ final class GRImmersiveRenderer {
         }
     }
 
+    /// Pipeline for drawing LÖVE's virtual screen into a drawable.
+    private func screenPipeline(for format: MTLPixelFormat) -> MTLRenderPipelineState? {
+        if let p = screenPipeline, pipelineFormat == format { return p }
+        guard let library = device.makeDefaultLibrary(),
+              let vfn = library.makeFunction(name: "gr_screen_vertex"),
+              let ffn = library.makeFunction(name: "gr_screen_fragment")
+        else { return nil }
+
+        let desc = MTLRenderPipelineDescriptor()
+        desc.vertexFunction = vfn
+        desc.fragmentFunction = ffn
+        desc.colorAttachments[0].pixelFormat = format
+        screenPipeline = try? device.makeRenderPipelineState(descriptor: desc)
+        pipelineFormat = format
+        return screenPipeline
+    }
+
     private func renderFrame() {
         guard let frame = layerRenderer.queryNextFrame() else { return }
 
@@ -74,22 +98,42 @@ final class GRImmersiveRenderer {
             return
         }
 
+        let screen = GRLove.virtualScreen
+
         // One pass per color texture. Under the `dedicated` layout that is one
         // per eye; under `layered` it is a single array texture. Driving it off
         // the drawable's own count keeps this correct either way.
         for index in 0..<drawable.colorTextures.count {
+            let target = drawable.colorTextures[index]
+
             let pass = MTLRenderPassDescriptor()
-            pass.colorAttachments[0].texture = drawable.colorTextures[index]
+            pass.colorAttachments[0].texture = target
             pass.colorAttachments[0].loadAction = .clear
             pass.colorAttachments[0].storeAction = .store
-            // Magenta: nothing in the game is this colour, so if it appears
-            // it is unambiguously this code and not a stale frame.
+            // Magenta only shows through if LÖVE has not produced a frame yet.
+            // Nothing in the game is this colour, so it is unambiguous.
             pass.colorAttachments[0].clearColor =
                 MTLClearColor(red: 0.85, green: 0.0, blue: 0.55, alpha: 1.0)
 
-            if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) {
-                encoder.endEncoding()
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
+
+            if let screen, let pipeline = screenPipeline(for: target.pixelFormat) {
+                // Fit the source inside the target without distorting it. The
+                // game frame is portrait and the eye buffers are not, so
+                // stretching would be very obvious.
+                let srcAspect = Float(screen.width) / Float(screen.height)
+                let dstAspect = Float(target.width) / Float(target.height)
+                var uniforms = ScreenUniforms(uvScale: srcAspect > dstAspect
+                    ? SIMD2(1.0, srcAspect / dstAspect)
+                    : SIMD2(dstAspect / srcAspect, 1.0))
+
+                encoder.setRenderPipelineState(pipeline)
+                encoder.setFragmentTexture(screen, index: 0)
+                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<ScreenUniforms>.stride, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             }
+
+            encoder.endEncoding()
         }
 
         drawable.encodePresent(commandBuffer: commandBuffer)
