@@ -162,8 +162,22 @@ final class GRImmersiveRenderer {
         let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: presentTime)
         drawable.deviceAnchor = deviceAnchor
 
+        // LÖVE's queue when it has one, because this frame samples the virtual
+        // screen for the panel and LÖVE writes that texture from its own
+        // thread. Metal orders command buffers within a queue by commit order
+        // and does not order across queues at all, so encoding here on a queue
+        // of our own can read the texture in the window between LÖVE's clear
+        // and LÖVE's draws -- an empty panel, now and then, which is what the
+        // flicker was. `queue` (the compositor device's own) still covers the
+        // frames drawn before LÖVE's graphics module is up.
+        //
+        // Same device either way: LÖVE's Metal backend takes the compositor's,
+        // and textures cannot be shared across MTLDevices in any case -- the
+        // panel has been sampling this one all along.
+        //
         // Same rule as above: nothing to present, so nothing to end.
-        guard let commandBuffer = queue.makeCommandBuffer() else { return }
+        guard let commandBuffer = (GRLove.commandQueue ?? queue).makeCommandBuffer()
+        else { return }
 
         let screen = GRLove.virtualScreen
         let originFromDevice = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4

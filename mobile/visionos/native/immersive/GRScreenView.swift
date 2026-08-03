@@ -35,7 +35,8 @@ struct GRScreenView: UIViewRepresentable {
     final class Coordinator: NSObject, MTKViewDelegate {
 
         let device: MTLDevice?
-        private let queue: MTLCommandQueue?
+        /// Only a fallback. The queue actually used is LÖVE's -- see `draw`.
+        private let ownQueue: MTLCommandQueue?
         private var pipeline: MTLRenderPipelineState?
         private var pipelineFormat: MTLPixelFormat = .invalid
 
@@ -46,7 +47,7 @@ struct GRScreenView: UIViewRepresentable {
             // no compositor. On a Vision Pro there is one GPU, so the virtual
             // screen texture is usable from both.
             device = MTLCreateSystemDefaultDevice()
-            queue = device?.makeCommandQueue()
+            ownQueue = device?.makeCommandQueue()
             super.init()
         }
 
@@ -75,7 +76,18 @@ struct GRScreenView: UIViewRepresentable {
             // what turns "LÖVE is still starting" into a black flash.
             guard let screen = GRLove.virtualScreen else { return }
 
-            guard let queue,
+            // LÖVE's queue, not ours. It writes this texture from its own
+            // thread, and Metal orders command buffers only WITHIN a queue --
+            // between two queues there is no ordering at all, so sampling from
+            // a queue of our own could land between LÖVE's clear and LÖVE's
+            // draws and show an empty frame. Intermittently: the flicker.
+            //
+            // ownQueue should not be reachable -- the queue is made in the
+            // Metal backend's constructor and the texture only later in
+            // setMode, so anything holding a virtual screen has a queue. It
+            // is here so a future reordering degrades to the old flickering
+            // behaviour rather than to a window that stops updating at all.
+            guard let queue = GRLove.commandQueue ?? ownQueue,
                   let drawable = view.currentDrawable,
                   let pass = view.currentRenderPassDescriptor,
                   let commandBuffer = queue.makeCommandBuffer(),

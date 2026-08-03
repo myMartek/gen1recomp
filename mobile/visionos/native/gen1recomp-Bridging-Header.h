@@ -28,6 +28,16 @@ int love_visionos_boot(void);
 /// NULL before the first setMode, or when not running headless.
 void *love_visionos_virtualScreenTexture(void);
 
+/// LOVE's own Metal command queue, as an id<MTLCommandQueue>. NULL before the
+/// graphics module is up.
+///
+/// Anything that samples the virtual screen must encode on THIS queue. Metal
+/// orders command buffers within a queue by commit order and orders nothing at
+/// all between queues, so a reader on a queue of its own can land between
+/// LOVE's clear and LOVE's draws and sample an empty frame -- which is the
+/// flicker both the launcher window and the in-world panel were showing.
+void *love_visionos_commandQueue(void);
+
 /// Hands the compositor's layer renderer to love.xr. Until Lua claims it the
 /// host keeps drawing; see love_visionos_xrClaimed.
 void love_visionos_setLayerRenderer(void *layerRenderer);

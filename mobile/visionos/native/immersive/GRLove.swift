@@ -63,6 +63,28 @@ enum GRLove {
         return cachedScreen
     }
 
+    /// LÖVE's Metal command queue.
+    ///
+    /// Every presentation of the virtual screen encodes on this queue rather
+    /// than one of its own. Metal keeps command buffers on a single queue in
+    /// commit order and gives no ordering whatsoever between two queues, so a
+    /// reader with its own queue could sample the texture in the gap between
+    /// LÖVE's clear and LÖVE's draws and come away with an empty frame. That
+    /// is the flicker, and sharing the queue removes it rather than making it
+    /// rarer.
+    ///
+    /// Cached like the texture above, and for the same reason: the lookup
+    /// behind it walks LÖVE's module registry from a thread that is not
+    /// LÖVE's.
+    private static var cachedQueue: MTLCommandQueue?
+
+    static var commandQueue: MTLCommandQueue? {
+        if let cached = cachedQueue { return cached }
+        guard let raw = love_visionos_commandQueue() else { return nil }
+        cachedQueue = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue() as? MTLCommandQueue
+        return cachedQueue
+    }
+
     /// Where LÖVE writes. Empty until its filesystem module is up.
     static var saveDirectory: String {
         String(cString: love_visionos_saveDirectory())

@@ -75,6 +75,23 @@ stale by submission. The per-eye field of view is handed over in OpenXR's
 signed convention, because that is what the voxel mod's VRRig and
 Mat4.fovProjection already consume.
 
+Part 7 -- one command queue, not two. love_visionos_commandQueue() hands the
+shell the queue LOVE submits on, and everything that samples the virtual
+screen encodes onto it: the flat launcher window and the panel the immersive
+renderer maps the frame onto.
+
+Both were using queues of their own. Metal keeps command buffers in commit
+order WITHIN a queue and gives no ordering at all BETWEEN queues, so a reader
+could encode its sample into the gap between LOVE's clear and LOVE's draws and
+come away with an empty frame -- intermittently, which looked like flicker and
+was reported as such from both presentations.
+
+Sharing the queue removes the race instead of narrowing it, at the price of
+not overlapping a reader's frame with LOVE's on the GPU. The alternative is a
+rotating set of snapshot textures plus an MTLSharedEvent to order them, which
+is the right answer if that serialisation ever shows up in a frame time; at
+these resolutions it should not.
+
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
 --- a/src/common/config.h
@@ -216,10 +233,10 @@ index 50930f1..0e62945 100644
  			if (r == RENDERER_METAL)
  				std::tie(instance, err) = metal::createInstance();
 diff --git a/src/modules/graphics/metal/Graphics.h b/src/modules/graphics/metal/Graphics.h
-index c7331ba..0c4c449 100644
+index c7331ba..c41df9e 100644
 --- a/src/modules/graphics/metal/Graphics.h
 +++ b/src/modules/graphics/metal/Graphics.h
-@@ -66,6 +66,15 @@ class Graphics final : public love::graphics::Graphics
+@@ -66,6 +66,22 @@ class Graphics final : public love::graphics::Graphics
  
  	void backbufferChanged(const BackbufferSettings &settings) override;
  	bool setMode(void *context, const BackbufferSettings &settings) override;
@@ -229,13 +246,20 @@ index c7331ba..0c4c449 100644
 +	// includable from plain C++.
 +	void *getVirtualScreenTexture() const;
 +
++	// The queue LOVE submits on. Handed out so the shell can encode its own
++	// work onto the SAME queue rather than a second one: command buffers on
++	// one queue execute in the order they were committed, which is what stops
++	// a reader from sampling the virtual screen halfway through the frame
++	// LOVE is drawing into it. Also void* for the same reason as above.
++	void *getCommandQueue() const;
++
 +	// Wraps an MTLTexture owned by someone else (a CompositorServices
 +	// drawable) as a love Texture that can be used as a render target.
 +	love::graphics::Texture *newTextureFromHandle(void *mtlTexture);
  	void unSetMode() override;
  
  	void setActive(bool active) override;
-@@ -221,6 +230,13 @@ class Graphics final : public love::graphics::Graphics
+@@ -221,6 +237,13 @@ class Graphics final : public love::graphics::Graphics
  
  	CAMetalLayer *metalLayer;
  	id<CAMetalDrawable> activeDrawable;
@@ -250,7 +274,7 @@ index c7331ba..0c4c449 100644
  
  	uint32 dirtyRenderState;
 diff --git a/src/modules/graphics/metal/Graphics.mm b/src/modules/graphics/metal/Graphics.mm
-index c8d5b18..2d00741 100644
+index c8d5b18..6eab8a2 100644
 --- a/src/modules/graphics/metal/Graphics.mm
 +++ b/src/modules/graphics/metal/Graphics.mm
 @@ -19,6 +19,11 @@
@@ -273,7 +297,7 @@ index c8d5b18..2d00741 100644
  	, passDesc(nil)
  	, dirtyRenderState(STATEBIT_ALL)
  	, lastCullMode(CULL_MAX_ENUM)
-@@ -531,10 +537,85 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -531,10 +537,111 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	}
  }
  
@@ -322,6 +346,32 @@ index c8d5b18..2d00741 100644
 +		return nullptr;
 +	return metalgfx->getVirtualScreenTexture();
 +}
++
++// The Metal command queue LOVE submits on.
++//
++// The shell needs this because the virtual screen has two readers -- the flat
++// launcher window and, in the immersive space, the panel the frame is mapped
++// onto -- and both of them were sampling a texture LOVE writes from its own
++// thread. Metal orders nothing between separate queues, so a reader could
++// encode its sample in between LOVE's clear and LOVE's draws and come away
++// with an empty frame. Intermittently, which is exactly what it looked like:
++// flicker.
++//
++// Command buffers committed to one queue execute in commit order, so putting
++// the readers on LOVE's queue removes the race rather than narrowing it. The
++// cost is that a reader's frame cannot overlap LOVE's on the GPU; at these
++// resolutions that is far cheaper than the alternative, which is a rotating
++// set of eye-sized snapshot textures plus an MTLSharedEvent to order them.
++extern "C" void *love_visionos_commandQueue()
++{
++	auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
++	if (gfx == nullptr)
++		return nullptr;
++	auto metalgfx = dynamic_cast<love::graphics::metal::Graphics *>(gfx);
++	if (metalgfx == nullptr)
++		return nullptr;
++	return metalgfx->getCommandQueue();
++}
 +#endif
 +
  bool Graphics::setMode(void *context, const BackbufferSettings &settings)
@@ -359,7 +409,7 @@ index c8d5b18..2d00741 100644
  	metalLayer.device = device;
  	metalLayer.pixelFormat = isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
  
-@@ -556,6 +637,51 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -556,6 +663,56 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	return true;
  }}
  
@@ -408,10 +458,15 @@ index c8d5b18..2d00741 100644
 +	return (__bridge void *) virtualScreen;
 +}
 +
++void *Graphics::getCommandQueue() const
++{
++	return (__bridge void *) commandQueue;
++}
++
  void Graphics::unSetMode()
  { @autoreleasepool {
  	if (!isCreated())
-@@ -570,6 +696,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -570,6 +727,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	created = false;
  	metalLayer = nil;
  	activeDrawable = nil;
@@ -419,7 +474,7 @@ index c8d5b18..2d00741 100644
  }}
  
  void Graphics::setActive(bool enable)
-@@ -661,7 +788,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -661,7 +819,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  		const auto &rts = states.back().renderTargets;
  		if (rts.getFirstTarget().texture.get() == nullptr)
  		{
@@ -428,7 +483,7 @@ index c8d5b18..2d00741 100644
  			{
  				// This is reset to YES after each frame.
  				// TODO: Does setting this reallocate memory?
-@@ -671,16 +798,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -671,16 +829,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  				activeDrawable = [metalLayer nextDrawable];
  			}
  
@@ -449,7 +504,7 @@ index c8d5b18..2d00741 100644
  				passDesc.colorAttachments[0].resolveTexture = nil;
  			}
  
-@@ -1694,8 +1823,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1694,8 +1854,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	id<MTLBuffer> screenshotbuffer = nil;
  
@@ -462,7 +517,7 @@ index c8d5b18..2d00741 100644
  
  	if (!pendingScreenshotCallbacks.empty())
  	{
-@@ -1707,7 +1838,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1707,7 +1869,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  		auto blitencoder = useBlitEncoder();
  
@@ -471,7 +526,7 @@ index c8d5b18..2d00741 100644
  						 sourceSlice:0
  						 sourceLevel:0
  						sourceOrigin:MTLOriginMake(0, 0, 0)
-@@ -1732,6 +1863,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1732,6 +1894,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	if (cmd != nil && activeDrawable != nil)
  		[cmd presentDrawable:activeDrawable];
