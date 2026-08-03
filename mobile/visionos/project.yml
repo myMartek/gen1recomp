@@ -249,6 +249,36 @@ targets:
               ${OTHER_CODE_SIGN_FLAGS:-} "$DST/libopenal.1.dylib"
           fi
 
+  # ------------------------------------------------- immersive shell
+  # The SwiftUI shell that owns @main for the VR presentation: a launcher
+  # window and a fully immersive space, switched at runtime and remembered
+  # across launches.
+  #
+  # A separate target from `gen1recomp` for now because the two disagree about
+  # who owns @main -- SDL does in the flat build, SwiftUI does here -- and they
+  # need different Info.plists for exactly that reason. They converge into one
+  # target once liblove renders headless into a virtual screen, at which point
+  # SDL stops owning a window at all and both presentations become two views of
+  # the same texture.
+  gen1recomp-immersive:
+    type: application
+    platform: visionOS
+    sources:
+      - path: native/immersive
+    dependencies:
+      - sdk: CompositorServices.framework
+      - sdk: ARKit.framework
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+    settings:
+      base:
+        PRODUCT_NAME: gen1recomp-immersive
+        PRODUCT_BUNDLE_IDENTIFIER: com.gen1recomp.xr.immersive
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: $(SRCROOT)/overlays/love-visionos.plist
+        CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/overlays/gen1recomp-visionos.entitlements
+
 schemes:
   gen1recomp:
     build:
@@ -258,3 +288,9 @@ schemes:
       config: Debug
     archive:
       config: Release
+  gen1recomp-immersive:
+    build:
+      targets:
+        gen1recomp-immersive: all
+    run:
+      config: Debug
