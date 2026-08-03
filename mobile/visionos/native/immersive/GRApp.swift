@@ -71,6 +71,8 @@ struct GRLauncherView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
+    @State private var loveStatus = "virtual screen: waiting for LÖVE…"
+
     var body: some View {
         VStack(spacing: 24) {
             Text("gen1recomp")
@@ -91,9 +93,30 @@ struct GRLauncherView: View {
             Text("The mode you are in is restored on the next launch.")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
+
+            Text(loveStatus)
+                .font(.system(size: 15, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .task {
+                    // Poll rather than wait on a signal: LÖVE sets its mode
+                    // some way into boot, and there is no callback for it yet.
+                    while !Task.isCancelled {
+                        let s = GRLove.describeVirtualScreen()
+                        if s != loveStatus {
+                            loveStatus = s
+                            GRLove.log.notice("\(s, privacy: .public)")
+                        }
+                        try? await Task.sleep(for: .milliseconds(500))
+                    }
+                }
         }
         .padding(48)
         .task {
+            // LÖVE comes up as soon as the app does, independently of which
+            // presentation is showing: both the window and the immersive space
+            // consume the same virtual screen, so neither owns its lifetime.
+            GRLove.bootOnce()
+
             // Hand the window actions to the model. Whatever ends immersion --
             // possibly the Digital Crown, with no view of ours involved --
             // needs to be able to bring this window back, and by then there is

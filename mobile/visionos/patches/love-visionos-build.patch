@@ -1,51 +1,44 @@
-Make LÖVE build for visionOS, and let it render without a presentable layer.
+Make LÖVE build for visionOS, render without a presentable layer, and boot
+from a host that owns @main.
 
 Part 1 -- building at all. visionOS defines TARGET_OS_IPHONE, so config.h
-already takes the LOVE_IOS branch and the whole iOS backend compiles, which is
-what we want: Metal, the iOS filesystem layout, the SDL3 UIKit path. Three
-things stop it:
+takes the LOVE_IOS branch and the iOS backend compiles, which is what we want:
+Metal, the iOS filesystem layout, the SDL3 UIKit path. Three things stop it:
 
-  1. src/common/ios.mm uses UIScreen in showGameList. visionOS has no UIScreen
-     because there is no single "main screen" to take bounds from.
-     showGameList is LÖVE's picker for choosing among several .love files and
-     is unreachable in an app that fuses one game.love into its bundle, so it
-     only has to compile.
-
-  2. src/modules/graphics/Graphics.cpp calls opengl::createInstance()
-     unconditionally, while the Vulkan and Metal backends beside it are already
-     guarded. Every GLES symbol in XROS.sdk is API_UNAVAILABLE(visionos), so
-     there is no OpenGL backend to link.
-
-  3. Hence a matching LOVE_GRAPHICS_OPENGL feature macro in config.h, defined
-     everywhere except visionOS, so renderer selection can be guarded the same
-     way as Vulkan and Metal already are.
-
-(2) and (3) are worth upstreaming on their own: they make "a platform with no
-OpenGL backend" expressible, which is a gap in LÖVE today rather than anything
-visionOS-specific.
+  1. common/ios.mm uses UIScreen in showGameList; visionOS has none, because
+     there is no single "main screen" to take bounds from. That function is
+     LÖVE's picker for several .love files and is unreachable for a bundle
+     with one fused game.love, so it only has to compile.
+  2. graphics/Graphics.cpp calls opengl::createInstance() unconditionally while
+     the Vulkan and Metal backends beside it are already guarded. Every GLES
+     symbol in XROS.sdk is API_UNAVAILABLE(visionos).
+  3. Hence a matching LOVE_GRAPHICS_OPENGL macro in config.h, defined
+     everywhere except visionOS. Worth upstreaming on its own: it makes "a
+     platform with no OpenGL backend" expressible, which is a gap today.
 
 Part 2 -- rendering with nowhere to present. A fully immersive visionOS app
-has no CAMetalLayer: frames go to CompositorServices drawables, and the flat
-2D image becomes a texture the app shows in a window or in-world. So
-metal::Graphics::setMode now accepts a null context and stands an ordinary
-offscreen texture in for the drawable. Everything downstream -- render passes,
-MSAA resolve, screenshot readback -- keeps working against that texture
-unchanged; only presentDrawable is skipped, because there is nothing to
-present to.
+has no CAMetalLayer; frames go to CompositorServices drawables and the flat 2D
+image becomes a texture shown in a window or in-world. metal::Graphics::setMode
+now accepts a null context and stands an offscreen texture in for the drawable.
+Render passes, MSAA resolve and screenshot readback keep working against it;
+only presentDrawable is skipped. The texture is MTLStorageModeShared so the
+host can read it back without staging through a blit -- unified memory makes
+that free on Apple GPUs.
 
-Whether to do that is a RUNTIME choice, not a compile-time one, and that
-distinction matters: the flat visionOS build still presents through SDL's
-layer exactly as on iOS and must keep working, while the immersive shell asks
-for a headless backbuffer before booting LÖVE. Window.cpp consults
-love_visionos_getHeadless() rather than an #ifdef for exactly that reason.
+This is a RUNTIME choice, not an #ifdef, and that matters: the flat visionOS
+build still presents through SDL's layer exactly as on iOS and must keep
+working. Window.cpp consults love_visionos_getHeadless().
 
-SDL's window is left alone in both cases rather than suppressed. It is never
-presented in the headless case, but it remains the source of events, and
-leaving it keeps this patch to one condition instead of auditing every Window
-method for a null window handle.
+Part 3 -- booting from a host that owns @main. love_visionos_boot() runs LÖVE
+without main(), for a SwiftUI shell that has its own entry point; LOVE_NO_MAIN
+suppresses LÖVE's main() and, with it, SDL_main.h's takeover
+(SDL_MAIN_HANDLED), which otherwise leaves an undefined _SDL_main.
 
-Verified: the flat build still renders its launcher in the simulator after
-these changes.
+love_visionos_prepareOnMainThread() exists because SDL's video init reaches
+into UIKit and BoardServices asserts a main-run-loop barrier there. It is
+necessary but NOT sufficient: SDL's window creation calls UIKit too and traps
+the same way, so LÖVE cannot yet run on a thread of its own while SDL owns a
+window.
 
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
@@ -87,6 +80,81 @@ index 44253ac..7406acc 100644
  	window.rootViewController = navcontroller;
  
  	SDL_EventFilter oldfilter = nullptr;
+diff --git a/src/love.cpp b/src/love.cpp
+index 8db471f..9a79c3e 100644
+--- a/src/love.cpp
++++ b/src/love.cpp
+@@ -27,6 +27,12 @@
+ 
+ #ifdef LOVE_BUILD_EXE
+ 
++// SDL_main.h renames our main() to SDL_main and supplies a real main() that
++// calls it. A target providing its own entry point (the SwiftUI shell) must
++// opt out of that, or the link fails on an undefined _SDL_main.
++#ifdef LOVE_NO_MAIN
++#define SDL_MAIN_HANDLED
++#endif
+ #include <SDL3/SDL_main.h>
+ 
+ // Lua
+@@ -302,6 +308,50 @@ static DoneAction runlove(int argc, char **argv, int &retval, love::Variant &res
+ 	return done;
+ }
+ 
++#ifdef LOVE_VISIONOS
++// Must be called on the MAIN thread before love_visionos_boot() runs anywhere
++// else. SDL's video init reaches into UIKit (-[UIApplication
++// _setIdleTimerDisabled:] by way of UIKit_SuspendScreenSaver), and BoardServices
++// asserts a main-run-loop barrier there -- doing it from LOVE's own thread
++// traps. Bringing the subsystem up here first leaves LOVE's later
++// SDL_InitSubSystem as a refcount bump that touches nothing.
++extern "C" void love_visionos_prepareOnMainThread()
++{
++	SDL_SetMainReady();
++	SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
++}
++
++// Entry point for the visionOS shell, which owns @main itself (SwiftUI) and
++// so cannot use the one below. Runs LOVE on whatever thread it is called
++// from and does not return: like iOS, visionOS apps are never meant to exit
++// programmatically, so a quit is turned back into a restart.
++//
++// The caller is expected to have set love_visionos_setHeadless(true) first,
++// which is what makes the graphics backend render into an offscreen texture
++// instead of looking for a layer to present to.
++extern "C" int love_visionos_boot()
++{
++	static char arg0[] = "love";
++	char *argv[] = { arg0, nullptr };
++
++	int retval = 0;
++	DoneAction done = DONE_QUIT;
++	love::Variant restartvalue;
++
++	do
++	{
++		done = runlove(1, argv, retval, restartvalue);
++		done = DONE_RESTART;
++	} while (done != DONE_QUIT);
++
++	return retval;
++}
++#endif
++
++// LOVE_NO_MAIN lets a target compile this file for love_visionos_boot() while
++// providing its own entry point -- the SwiftUI shell's @main, which would
++// otherwise collide with this at link time.
++#ifndef LOVE_NO_MAIN
+ int main(int argc, char **argv)
+ {
+ 	if (strcmp(LOVE_VERSION_STRING, love_version()) != 0)
+@@ -333,5 +383,6 @@ int main(int argc, char **argv)
+ 
+ 	return retval;
+ }
++#endif // LOVE_NO_MAIN
+ 
+ #endif // LOVE_BUILD_EXE
 diff --git a/src/modules/graphics/Graphics.cpp b/src/modules/graphics/Graphics.cpp
 index 50930f1..0e62945 100644
 --- a/src/modules/graphics/Graphics.cpp
@@ -143,7 +211,7 @@ index c7331ba..d1615e7 100644
  
  	uint32 dirtyRenderState;
 diff --git a/src/modules/graphics/metal/Graphics.mm b/src/modules/graphics/metal/Graphics.mm
-index c8d5b18..de550b9 100644
+index c8d5b18..4b89657 100644
 --- a/src/modules/graphics/metal/Graphics.mm
 +++ b/src/modules/graphics/metal/Graphics.mm
 @@ -276,6 +276,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
@@ -154,7 +222,7 @@ index c8d5b18..de550b9 100644
  	, passDesc(nil)
  	, dirtyRenderState(STATEBIT_ALL)
  	, lastCullMode(CULL_MAX_ENUM)
-@@ -531,10 +532,68 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -531,10 +532,72 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	}
  }
  
@@ -209,7 +277,11 @@ index c8d5b18..de550b9 100644
 +										height:std::max(1, settings.pixelHeight)
 +									 mipmapped:NO];
 +		desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-+		desc.storageMode = MTLStorageModePrivate;
++		// Shared rather than private: unified memory makes this free on
++		// Apple GPUs, and it lets the shell read the frame back on the CPU
++		// (to prove LOVE is drawing at all, and for screenshots) without
++		// staging it through a blit first.
++		desc.storageMode = MTLStorageModeShared;
 +		virtualScreen = [device newTextureWithDescriptor:desc];
 +		if (virtualScreen == nil)
 +			throw love::Exception("Out of graphics memory (virtual screen).");
@@ -223,7 +295,7 @@ index c8d5b18..de550b9 100644
  	metalLayer.device = device;
  	metalLayer.pixelFormat = isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
  
-@@ -556,6 +615,11 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -556,6 +619,11 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	return true;
  }}
  
@@ -235,7 +307,7 @@ index c8d5b18..de550b9 100644
  void Graphics::unSetMode()
  { @autoreleasepool {
  	if (!isCreated())
-@@ -570,6 +634,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -570,6 +638,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	created = false;
  	metalLayer = nil;
  	activeDrawable = nil;
@@ -243,7 +315,7 @@ index c8d5b18..de550b9 100644
  }}
  
  void Graphics::setActive(bool enable)
-@@ -661,7 +726,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -661,7 +730,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  		const auto &rts = states.back().renderTargets;
  		if (rts.getFirstTarget().texture.get() == nullptr)
  		{
@@ -252,7 +324,7 @@ index c8d5b18..de550b9 100644
  			{
  				// This is reset to YES after each frame.
  				// TODO: Does setting this reallocate memory?
-@@ -671,16 +736,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -671,16 +740,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  				activeDrawable = [metalLayer nextDrawable];
  			}
  
@@ -273,7 +345,7 @@ index c8d5b18..de550b9 100644
  				passDesc.colorAttachments[0].resolveTexture = nil;
  			}
  
-@@ -1694,8 +1761,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1694,8 +1765,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	id<MTLBuffer> screenshotbuffer = nil;
  
@@ -286,7 +358,7 @@ index c8d5b18..de550b9 100644
  
  	if (!pendingScreenshotCallbacks.empty())
  	{
-@@ -1707,7 +1776,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1707,7 +1780,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  		auto blitencoder = useBlitEncoder();
  
@@ -295,7 +367,7 @@ index c8d5b18..de550b9 100644
  						 sourceSlice:0
  						 sourceLevel:0
  						sourceOrigin:MTLOriginMake(0, 0, 0)
-@@ -1732,6 +1801,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1732,6 +1805,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	if (cmd != nil && activeDrawable != nil)
  		[cmd presentDrawable:activeDrawable];

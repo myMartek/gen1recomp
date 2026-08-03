@@ -269,19 +269,88 @@ targets:
     platform: visionOS
     sources:
       - path: native/immersive
+      # love.cpp carries the visionOS boot entry point. LOVE_NO_MAIN below
+      # suppresses its main(), which would otherwise collide with SwiftUI's.
+      - path: love-src/src/love.cpp
+        group: love
+      - path: resources/game.love
+        buildPhase: resources
+        type: file
+        optional: true
     dependencies:
+      - target: liblove
+      - framework: deps/luajit.xcframework
+        embed: false
+      - framework: deps/sdl3.xcframework
+        embed: false
+      - framework: deps/freetype.xcframework
+        embed: false
+      - framework: deps/harfbuzz.xcframework
+        embed: false
+      - framework: deps/ogg.xcframework
+        embed: false
+      - framework: deps/vorbis.xcframework
+        embed: false
+      - framework: deps/theora.xcframework
+        embed: false
+      - framework: deps/modplug.xcframework
+        embed: false
+      - framework: deps/openal.xcframework
+        embed: false
       - sdk: CompositorServices.framework
       - sdk: ARKit.framework
+      - sdk: GameController.framework
       - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreHaptics.framework
+      - sdk: UniformTypeIdentifiers.framework
+      - sdk: UIKit.framework
       - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreVideo.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreMotion.framework
+      - sdk: CoreText.framework
+      - sdk: ImageIO.framework
+      - sdk: Foundation.framework
+      - sdk: libz.tbd
     settings:
       base:
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - $(inherited)
+          - LOVE_NO_MAIN=1
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/Frameworks"
         PRODUCT_NAME: gen1recomp-immersive
         PRODUCT_BUNDLE_IDENTIFIER: com.gen1recomp.xr.immersive
         MARKETING_VERSION: "0.0.0"
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: $(SRCROOT)/overlays/love-visionos.plist
         CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/overlays/gen1recomp-visionos.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/native/gen1recomp-Bridging-Header.h
+        CLANG_ENABLE_MODULES: YES
+    postBuildScripts:
+      - name: Embed and sign openal-soft
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          case "$PLATFORM_NAME" in
+            xrsimulator) SLICE=xros-arm64-simulator ;;
+            *)           SLICE=xros-arm64 ;;
+          esac
+          SRC="$SRCROOT/deps/openal.xcframework/$SLICE"
+          DST="$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
+          LIB="$(/bin/ls "$SRC"/libopenal.*.dylib 2>/dev/null | head -1)"
+          if [ -z "$LIB" ]; then echo "error: no libopenal dylib in $SRC" >&2; exit 1; fi
+          mkdir -p "$DST"
+          cp -f "$LIB" "$DST/libopenal.1.dylib"
+          if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ]; then
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+              ${OTHER_CODE_SIGN_FLAGS:-} "$DST/libopenal.1.dylib"
+          fi
 
 schemes:
   gen1recomp:
