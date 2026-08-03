@@ -359,7 +359,13 @@ verify_app() {
     *) fail "$bin is platform '$plat' -- wrong SDK. Re-read the DEVELOPER_DIR note in mobile/visionos/README.md." ;;
   esac
   [ -f "$APP/game.love" ] || fail "game.love did not make it into the bundle"
-  [ -d "$APP/Frameworks" ] || warn "no embedded Frameworks dir -- openal-soft should be in there"
+  # Not a warning: an app missing this links and installs perfectly, then dies
+  # at launch with "Library not loaded: @rpath/libopenal.1.dylib". Xcode does
+  # not embed a bare .dylib out of an xcframework on its own.
+  [ -f "$APP/Frameworks/libopenal.1.dylib" ] \
+    || fail "libopenal.1.dylib is not embedded in the bundle.
+The 'Embed and sign openal-soft' script phase in mobile/visionos/project.yml
+did not run or did not find its slice."
 
   # Assert the Info.plist keys that make this an immersive visionOS app rather
   # than a window. Worth checking explicitly: XcodeGen's `info:` block

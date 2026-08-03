@@ -27,6 +27,13 @@ settings:
   base:
     SUPPORTED_PLATFORMS: xros xrsimulator
     TARGETED_DEVICE_FAMILY: "7"          # 7 = Apple Vision
+    # arm64 only, and pinned rather than left to ARCHS_STANDARD. For the
+    # simulator that default still expands to include x86_64, which fails to
+    # link with the message "Undefined symbols for architecture x86_64" --
+    # blaming the symbols rather than the architecture, so it reads like a
+    # missing library. deps/build_deps.sh builds arm64 slices only, which is
+    # the correct and only useful target on an Apple Silicon Mac.
+    ARCHS: arm64
     XROS_DEPLOYMENT_TARGET: "26.0"
     SWIFT_VERSION: "5.0"
     CLANG_CXX_LANGUAGE_STANDARD: "c++17"
@@ -108,13 +115,21 @@ targets:
           - "common/android.cpp"
     dependencies:
       - framework: deps/luajit.xcframework
+        embed: false
       - framework: deps/sdl3.xcframework
+        embed: false
       - framework: deps/freetype.xcframework
+        embed: false
       - framework: deps/harfbuzz.xcframework
+        embed: false
       - framework: deps/ogg.xcframework
+        embed: false
       - framework: deps/vorbis.xcframework
+        embed: false
       - framework: deps/theora.xcframework
+        embed: false
       - framework: deps/modplug.xcframework
+        embed: false
       - framework: deps/openal.xcframework
     settings:
       base:
@@ -139,18 +154,29 @@ targets:
     dependencies:
       - target: liblove
       - framework: deps/luajit.xcframework
+        embed: false
       - framework: deps/sdl3.xcframework
+        embed: false
       - framework: deps/freetype.xcframework
+        embed: false
       - framework: deps/harfbuzz.xcframework
+        embed: false
       - framework: deps/ogg.xcframework
+        embed: false
       - framework: deps/vorbis.xcframework
+        embed: false
       - framework: deps/theora.xcframework
+        embed: false
       - framework: deps/modplug.xcframework
-      # openal-soft is LGPL-2.1 and therefore dynamic + embedded rather than
-      # statically linked; see deps/build_deps.sh.
+        embed: false
+      # openal-soft is LGPL-2.1 and therefore dynamic rather than statically
+      # linked; see deps/build_deps.sh. embed: false because Xcode's embed
+      # machinery only understands .framework bundles -- an xcframework holding
+      # a bare .dylib links fine and then produces an app that dies at launch
+      # with "Library not loaded: @rpath/libopenal.1.dylib". The postBuildScript
+      # below does the copy and the signing instead.
       - framework: deps/openal.xcframework
-        embed: true
-        codeSign: true
+        embed: false
       - sdk: CompositorServices.framework
       - sdk: ARKit.framework
       - sdk: GameController.framework
@@ -194,6 +220,34 @@ targets:
         # Swift immersive shell call into the C ABI that src/modules/xr exposes.
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/native/gen1recomp-Bridging-Header.h
         CLANG_ENABLE_MODULES: YES
+    postBuildScripts:
+      - name: Embed and sign openal-soft
+        basedOnDependencyAnalysis: false
+        script: |
+          # openal-soft is a dynamic library on purpose (LGPL-2.1 section 6:
+          # the user has to be able to swap it), but it lives in an xcframework
+          # as a bare .dylib, which Xcode will not embed on its own. Copy the
+          # slice matching the SDK being built and re-sign it with the app's
+          # identity.
+          set -euo pipefail
+          case "$PLATFORM_NAME" in
+            xrsimulator) SLICE=xros-arm64-simulator ;;
+            *)           SLICE=xros-arm64 ;;
+          esac
+          SRC="$SRCROOT/deps/openal.xcframework/$SLICE"
+          DST="$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
+          LIB="$(/bin/ls "$SRC"/libopenal.*.dylib 2>/dev/null | head -1)"
+          if [ -z "$LIB" ]; then
+            echo "error: no libopenal dylib in $SRC" >&2; exit 1
+          fi
+          mkdir -p "$DST"
+          # The install_name is @rpath/libopenal.1.dylib, so the copy has to
+          # carry exactly that name regardless of the versioned source file.
+          cp -f "$LIB" "$DST/libopenal.1.dylib"
+          if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ]; then
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
+              ${OTHER_CODE_SIGN_FLAGS:-} "$DST/libopenal.1.dylib"
+          fi
 
 schemes:
   gen1recomp:
