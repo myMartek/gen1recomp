@@ -84,6 +84,54 @@ ROM import — without any Metal or CompositorServices code involved, so it is
 the right thing to reach for when a build breaks and you want to know whether
 the problem is the immersive layer or something underneath it.
 
+## Testing without the headset
+
+The simulator is worth using even though it cannot show stereo: launching on a
+real Vision Pro requires it to be **awake and worn**, so an unattended
+`devicectl device process launch` just hangs. The simulator has no such
+constraint, and in practice it has caught more than the device build did.
+
+```bash
+mobile/visionos/deps/build_deps.sh          # once
+scripts/build_visionos.sh --simulator
+
+UDID=$(xcrun simctl list devices available -j | python3 -c '
+import json,sys
+for rt,ds in json.load(sys.stdin)["devices"].items():
+    if "xrOS" in rt:
+        print(next(d["udid"] for d in ds if d["isAvailable"])); break')
+xcrun simctl boot "$UDID"
+xcrun simctl install "$UDID" mobile/visionos/build/Products/Debug-xrsimulator/gen1recomp.app
+xcrun simctl launch --console-pty "$UDID" com.gen1recomp.xr
+```
+
+What the simulator gives you:
+
+- **stdout**, so LÖVE's `print()` and `src/core/Logger.lua` are visible.
+- **Crash reports** in `~/Library/Logs/DiagnosticReports/gen1recomp-*.ips`,
+  with a symbolicated backtrace — this is how the openal semaphore abort was
+  found.
+- **lldb.** `xcrun simctl launch --wait-for-debugger` prints the pid; attach
+  with `xcrun lldb -p <pid>` and `breakpoint set --name __cxa_throw` to catch
+  the exact throw site of an exception that escapes a `noexcept` boundary.
+- **Environment variables**, via the `SIMCTL_CHILD_` prefix — e.g.
+  `SIMCTL_CHILD_ALSOFT_LOGLEVEL=3` for openal-soft's own diagnostics, or
+  `SIMCTL_CHILD_ALSOFT_DRIVERS=null` to take the audio backend out of the
+  picture.
+- **The system log**, which is where the interesting non-stdout facts live:
+  `xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "gen1recomp"' --style compact`
+  shows Metal/IOSurface setup, RealityKit compositing, and the
+  GameController framework enumerating connected devices.
+
+What it does not give you: `xcrun simctl io <udid> screenshot` captures the
+simulated **environment**, not the app's window, so it is not a way to see
+whether the game is drawing. Nor is there stereo, hand tracking, or PSVR2
+Sense support. Those need the headset.
+
+A quick way to bisect a startup failure without rebuilding: patch `conf.lua`
+inside the packed `game.love` and re-install. `t.modules.audio = false` is how
+the openal crash was confirmed to be audio in about a minute.
+
 ## Dependencies
 
 Pinned in [`DEPS_VERSIONS`](DEPS_VERSIONS); the hash of that file is also the
