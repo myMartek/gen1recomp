@@ -66,17 +66,14 @@
 	     6DoF poses come from ARKit's accessory tracking rather than from
 	     GameController at all. -->
 	<!--
-		FALSE, and this is load-bearing rather than a preference. With true,
-		the system claims the controller to drive focus between UI elements --
-		and once this app kept its window open during immersion, that window
-		was focusable, so the controller went to SwiftUI instead of to the
-		game. It worked before only because the window was being dismissed.
-		False means the app receives the input itself, which is what LOVE (via
-		SDL's GameController backend) needs. The window's own buttons are still
-		reachable by looking and pinching.
+		True, as in the build where the controller actually drove the game.
+		Setting it false was an attempt to stop SwiftUI's focus ring competing
+		for the pad; it did not help, and the configuration that worked had
+		this on and no window open during immersion. Restored together with
+		that window behaviour, since the two go together.
 	-->
 	<key>GCSupportsControllerUserInteraction</key>
-	<false/>
+	<true/>
 	<key>GCSupportedGameControllers</key>
 	<array>
 		<dict>

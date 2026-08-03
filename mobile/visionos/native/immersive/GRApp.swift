@@ -170,17 +170,13 @@ struct GRLauncherView: View {
             guard !model.didRestoreOnLaunch else { return }
             model.didRestoreOnLaunch = true
 
-            if model.previousSessionEndedBadly {
-                // Last run died while immersed. Come back windowed rather than
-                // dropping straight into whatever broke, with no window to get
-                // out from -- otherwise every launch repeats it.
-                GRLove.log.notice("previous session ended while immersed; starting windowed")
-                model.markImmersiveSessionEnded()
-                model.wantsImmersiveOnLaunch = false
-                return
-            }
-
-            if model.wantsImmersiveOnLaunch { await open() }
+            // Every launch starts at the menu, deliberately. Restoring into
+            // immersion sounded convenient and in practice meant that any
+            // problem in the immersive path was unescapable: the app came back
+            // up inside it, with no window, every single time. The menu is the
+            // one place from which everything else is reachable.
+            model.markImmersiveSessionEnded()
+            model.wantsImmersiveOnLaunch = false
         }
     }
 
@@ -217,13 +213,10 @@ struct GRLauncherView: View {
             model.immersiveState = .open
             model.wantsImmersiveOnLaunch = true
             model.markImmersiveSessionStarted()
-            // The window deliberately STAYS. visionOS composites it natively,
-            // at full resolution, with correct per-eye reprojection -- a
-            // hand-drawn quad in the immersive space cannot match that, and
-            // the attempt looked exactly as bad as it was: soft, different in
-            // each eye, and fringing at the edges as the head moved.
-            // It gets dismissed again once the immersive space has real world
-            // geometry that justifies taking the screen over.
+            // Dismissed again, as in the build where the controller worked.
+            // Keeping it open gave a sharper picture but left a focusable
+            // window competing for the pad, and playable beats pretty.
+            dismissWindow(id: GRAppModel.launcherWindowID)
         case .userCancelled, .error:
             // The space did not open, so do not persist a mode the app cannot
             // actually come back to -- otherwise a one-off failure makes every
@@ -256,10 +249,6 @@ struct GRApp: App {
         ImmersiveSpace(id: "world") {
             GRImmersiveContent(model: model)
         }
-        // Mixed while the immersive space has nothing of its own to show.
-        // Full immersion today would replace the room with black and leave the
-        // window floating in a void, which is worse in every way than leaving
-        // the room visible. This becomes .full when the voxel world renders.
-        .immersionStyle(selection: .constant(.mixed), in: .mixed)
+        .immersionStyle(selection: .constant(.full), in: .full)
     }
 }
