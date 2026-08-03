@@ -226,7 +226,12 @@ final class GRImmersiveRenderer {
                     let len = simd_length(fwd)
                     let dir = len > 0.001 ? fwd / len : SIMD3<Float>(0, 0, -1)
                     panelCentre = headPos + dir * panelDistance
-                    panelYaw = atan2(dir.x, dir.z)
+                    // The quad's normal is +Z, so it has to be turned to face
+                    // BACK along the view direction. Using dir itself yields a
+                    // 180-degree turn for the common case of looking down -Z,
+                    // which shows the quad's back face -- and with no culling
+                    // that reads as the whole picture being mirrored.
+                    panelYaw = atan2(-dir.x, -dir.z)
                 }
                 guard let centre = panelCentre else { encoder.endEncoding(); continue }
 
