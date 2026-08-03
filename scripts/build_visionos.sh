@@ -91,8 +91,12 @@ done
 # So the flat (SDL-windowed) build must NOT carry the immersive manifest.
 if $FLAT; then
   PLIST=overlays/love-visionos-flat.plist
+  SCHEME=gen1recomp
+  APP_NAME=gen1recomp.app
 else
   PLIST=overlays/love-visionos.plist
+  SCHEME=gen1recomp-immersive
+  APP_NAME=gen1recomp-immersive.app
 fi
 
 $RELEASE && CONFIG=Release || CONFIG=Debug
@@ -112,7 +116,10 @@ DEVICE_UDID="${GEN1_VISIONOS_DEVICE:-}"
 # ------------------------------------------------------------- preflight
 preflight() {
   command -v xcodebuild >/dev/null 2>&1 || fail "xcodebuild not found"
-  local ver; ver="$(xcodebuild -version | head -1)"
+  # NOT `| head -1`: head closes the pipe, xcodebuild takes SIGPIPE, and with
+  # `set -o pipefail` that kills this script -- silently, before it prints a
+  # single line. sed consumes its whole input, so nothing gets a broken pipe.
+  local ver; ver="$(xcodebuild -version 2>/dev/null | sed -n '1p')"
   xcrun --sdk xros --show-sdk-path >/dev/null 2>&1 || fail \
 "$ver (at $DEVELOPER_DIR) has no visionOS SDK.
 Point DEVELOPER_DIR at an Xcode that does:
@@ -144,7 +151,7 @@ detect_team() {
         [ -e "$p" ] || continue
         security cms -D -i "$p" 2>/dev/null \
           | plutil -extract TeamIdentifier.0 raw - 2>/dev/null
-      done | sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
+      done | sort | uniq -c | sort -rn | awk 'NR==1 {print $2}'
     )"
   fi
 
@@ -152,7 +159,7 @@ detect_team() {
   # where -allowProvisioningUpdates will create the first one).
   if [ -z "${DEVELOPMENT_TEAM:-}" ]; then
     DEVELOPMENT_TEAM="$(security find-identity -v -p codesigning 2>/dev/null \
-      | sed -n 's/.*"Apple Develop\(ment\|er\).*(\([A-Z0-9]\{10\}\))".*/\2/p' | head -1)"
+      | sed -n 's/.*"Apple Develop\(ment\|er\).*(\([A-Z0-9]\{10\}\))".*/\2/p' | sed -n '1p')"
   fi
 
   [ -n "${DEVELOPMENT_TEAM:-}" ] || fail \
@@ -319,7 +326,7 @@ generate_project() {
 run_xcodebuild() {
   local args=(
     -project "$PROJECT"
-    -scheme gen1recomp
+    -scheme "$SCHEME"
     -configuration "$CONFIG"
     -sdk "$SDK"
     SYMROOT="$BUILD_DIR/Products"
@@ -354,9 +361,9 @@ run_xcodebuild() {
   else
     xcodebuild "${args[@]}" > "$log" 2>&1 || true
   fi
-  APP="$(find "$BUILD_DIR/Products/$CONFIG-$SDK" -maxdepth 1 -name 'gen1recomp.app' 2>/dev/null | head -1)"
+  APP="$(find "$BUILD_DIR/Products/$CONFIG-$SDK" -maxdepth 1 -name "$APP_NAME" 2>/dev/null | sed -n '1p')"
   [ -n "$APP" ] || {
-    grep -E "\berror:|ld: " "$log" | sort -u | head -20 >&2
+    grep -E "\berror:|ld: " "$log" | sort -u | awk 'NR<=20' >&2
     fail "build failed; full log at $log"
   }
   say "built $APP"
@@ -366,7 +373,7 @@ run_xcodebuild() {
 # fails, so assert on the artefact rather than trusting the exit code. Same
 # reasoning as build_ios.sh's verify_native_bridge.
 verify_app() {
-  local bin="$APP/gen1recomp"
+  local bin="$APP/${APP_NAME%.app}"
   [ -f "$bin" ] || fail "no executable inside $APP"
   local plat
   plat="$(vtool -show-build-version "$bin" 2>/dev/null | awk '/platform/ {print $2}')"
