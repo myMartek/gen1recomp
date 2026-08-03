@@ -123,10 +123,36 @@ What the simulator gives you:
   shows Metal/IOSurface setup, RealityKit compositing, and the
   GameController framework enumerating connected devices.
 
-What it does not give you: `xcrun simctl io <udid> screenshot` captures the
-simulated **environment**, not the app's window, so it is not a way to see
-whether the game is drawing. Nor is there stereo, hand tracking, or PSVR2
-Sense support. Those need the headset.
+- **Screenshots that really do show the app**: `xcrun simctl io <udid>
+  screenshot out.png` composites the app's window into the simulated room. If
+  you get a picture of the room with no window in it, that is a genuine
+  finding, not a limitation of the tool — build the throwaway SwiftUI
+  hello-world below to prove the difference before believing anything else.
+
+What it does not give you: stereo, hand tracking, or PSVR2 Sense support.
+Those need the headset.
+
+### When the app runs but shows nothing
+
+Worth its own note, because it happened and nothing logged an error. A
+`UIApplicationSceneManifest` in Info.plist switches UIKit to the scene-based
+lifecycle. SDL3 owns `@main` in the flat build and creates its window through
+the legacy `UIApplicationDelegate` path, so with a manifest present its
+`UIWindow` is never attached to a window scene: the process runs, LÖVE boots,
+Metal allocates a surface, and there is simply no window. That is why the flat
+and immersive builds carry different plists.
+
+The cheapest way to tell "broken app" from "broken environment" is a
+throwaway app that cannot be wrong:
+
+```swift
+import SwiftUI
+@main struct HelloApp: App {
+    var body: some Scene { WindowGroup { Color.red.frame(width: 900, height: 500) } }
+}
+```
+
+If that shows and yours does not, the problem is your app.
 
 A quick way to bisect a startup failure without rebuilding: patch `conf.lua`
 inside the packed `game.love` and re-install. `t.modules.audio = false` is how
