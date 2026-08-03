@@ -84,6 +84,44 @@ ROM import — without any Metal or CompositorServices code involved, so it is
 the right thing to reach for when a build breaks and you want to know whether
 the problem is the immersive layer or something underneath it.
 
+## Where this has got to
+
+Working and verified in the simulator:
+
+- All dependencies built for `xros` from source, reproducibly.
+- LÖVE 12 on Metal, running **headless**: no window, no layer, every frame in
+  an offscreen "virtual screen" texture.
+- A SwiftUI shell that switches between a flat window and a fully immersive
+  space **at runtime**, closes the window while immersed, brings it back by
+  any route out (including a Digital Crown press), and remembers the mode
+  across launches.
+- ARKit head tracking with per-eye view and projection matrices, drawing the
+  virtual screen as a **world-locked panel**.
+- `metal::Texture` can adopt a texture it did not create — compiled, not yet
+  exercised.
+
+So the game is visible in VR, but as a flat panel. The voxel mod is not
+running yet.
+
+### The next step, and the decision it turns on
+
+To get real stereo, the mod's existing per-eye path (`VoxelScene.render`'s
+`eyes` argument, `VRRig`, `Mat4.fovProjection`) has to draw into the
+CompositorServices drawables. That needs a `love.xr` Lua module exposing
+`beginFrame` / `views` / `eyeCanvas` / `submitFrame`.
+
+The real question is **who drives the frame loop**. Today `GRImmersiveRenderer`
+owns it on its own thread and LÖVE runs independently. For per-eye rendering
+that has to invert: LÖVE's frame must happen *inside* a CompositorServices
+frame, so that the eye matrices it renders with are the ones the frame is
+submitted against. Anything else renders with stale head pose.
+
+That means Lua calls `love.xr.beginFrame()`, which blocks until the compositor
+is ready — i.e. the Swift render loop goes away and the layer renderer is
+handed to LÖVE's thread instead. It is a clean change but not a small one, and
+it replaces something that currently works, so it wants doing deliberately
+rather than at the end of a long session.
+
 ## Testing without the headset
 
 The simulator is worth using even though it cannot show stereo: launching on a
