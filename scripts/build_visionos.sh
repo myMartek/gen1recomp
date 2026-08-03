@@ -5,6 +5,9 @@
 #                                  [--release] [--install] [--launch]
 #                                  [--version X.Y.Z] [--package-only]
 #
+#   --flat           build the non-immersive variant: an ordinary SDL3 window
+#                    in the Shared Space. This is the DEFAULT today, because
+#                    the SwiftUI immersive shell is not written yet.
 #   --fetch          fetch the pinned LÖVE sources into mobile/visionos/love-src/
 #   --deps           build the xros dependency slices (see mobile/visionos/deps/)
 #   --device         build for the headset (default)
@@ -59,12 +62,14 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
 export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
 
-FETCH=false; DEPS=false; DEVICE=true; RELEASE=false
+FETCH=false; DEPS=false; DEVICE=true; RELEASE=false; FLAT=true
 INSTALL=false; LAUNCH=false; PACKAGE_ONLY=false
 VERSION="${VERSION:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --flat)         FLAT=true ;;
+    --immersive)    FLAT=false ;;
     --fetch)        FETCH=true ;;
     --deps)         DEPS=true ;;
     --device)       DEVICE=true ;;
@@ -79,6 +84,16 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# Which Info.plist the app gets, and it is not cosmetic: a scene manifest
+# switches UIKit to the scene-based lifecycle, and SDL's legacy UIWindow then
+# never attaches to a window scene -- the app runs perfectly and shows nothing.
+# So the flat (SDL-windowed) build must NOT carry the immersive manifest.
+if $FLAT; then
+  PLIST=overlays/love-visionos-flat.plist
+else
+  PLIST=overlays/love-visionos.plist
+fi
 
 $RELEASE && CONFIG=Release || CONFIG=Debug
 $DEVICE  && SDK=xros        || SDK=xrsimulator
@@ -310,6 +325,7 @@ run_xcodebuild() {
     SYMROOT="$BUILD_DIR/Products"
     OBJROOT="$BUILD_DIR/Intermediates"
     ONLY_ACTIVE_ARCH=NO
+    INFOPLIST_FILE="$VISIONOS_DIR/$PLIST"
   )
   [ -n "$BUNDLE_ID" ] && args+=(PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID")
   [ -n "$VERSION" ]   && args+=(MARKETING_VERSION="$VERSION")
@@ -374,7 +390,7 @@ did not run or did not find its slice."
   # manifest builds, installs and signs perfectly, then simply never opens its
   # immersive space. The build passing is not evidence that this survived.
   local k
-  for k in UIApplicationSceneManifest GCSupportedGameControllers \
+  for k in GCSupportedGameControllers \
            NSWorldSensingUsageDescription NSAccessoryTrackingUsageDescription \
            NSHandsTrackingUsageDescription; do
     /usr/libexec/PlistBuddy -c "Print :$k" "$APP/Info.plist" >/dev/null 2>&1 \
@@ -382,12 +398,20 @@ did not run or did not find its slice."
 mobile/visionos/overlays/love-visionos.plist did not reach the bundle -- check
 INFOPLIST_FILE in mobile/visionos/project.yml."
   done
-  /usr/libexec/PlistBuddy -c \
-    'Print :UIApplicationSceneManifest:UISceneConfigurations:UISceneSessionRoleImmersiveSpaceApplication' \
-    "$APP/Info.plist" >/dev/null 2>&1 \
-    || fail "the bundle declares no immersive space scene role"
-
-  say "verified: $plat, game.love present, immersive scene manifest intact"
+  # The scene manifest is required for the immersive build and must be ABSENT
+  # from the flat one -- present, it silently costs you the SDL window.
+  if $FLAT; then
+    /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest' "$APP/Info.plist" >/dev/null 2>&1 \
+      && fail "the flat build carries a UIApplicationSceneManifest.
+SDL's window will never attach to a scene and the app will show nothing."
+    say "verified: $plat, game.love present, flat (no scene manifest)"
+  else
+    /usr/libexec/PlistBuddy -c \
+      'Print :UIApplicationSceneManifest:UISceneConfigurations:UISceneSessionRoleImmersiveSpaceApplication' \
+      "$APP/Info.plist" >/dev/null 2>&1 \
+      || fail "the bundle declares no immersive space scene role"
+    say "verified: $plat, game.love present, immersive scene manifest intact"
+  fi
 }
 
 resolve_device() {

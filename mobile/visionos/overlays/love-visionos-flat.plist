@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	Info.plist for the FLAT visionOS build (scripts/build_visionos.sh --flat):
+	an ordinary SDL3 window in the Shared Space, no immersion.
+
+	The one meaningful difference from love-visionos.plist is that this file has
+	NO UIApplicationSceneManifest, and that is the entire point. LOVE gets its
+	window from SDL3's legacy UIApplicationDelegate path. Declaring a scene
+	manifest switches UIKit to the scene-based lifecycle, and SDL's UIWindow is
+	then never attached to a window scene: the app launches, runs, renders into
+	a surface nobody presents, and shows no window at all. Nothing logs an
+	error -- it simply is not there.
+
+	So the scene manifest belongs to the SwiftUI immersive shell, which owns
+	@main itself, and must not be in the plist used with SDL's.
+
+	Derived from mobile/ios/overlays/love-ios.plist. Dropped relative to it:
+	interface orientations, every status-bar key, UILaunchStoryboardName and
+	LSRequiresIPhoneOS (all iOS-family concepts with no visionOS meaning), and
+	the HealthKit usage string (there is no HealthKit here, so the Pokéwalker
+	mod simply does not apply).
+
+	The scene-manifest keys below are taken verbatim from Xcode 27's own
+	visionOS App template (primarySceneType Window / secondarySceneType Metal /
+	immersiveSpaceStyle Full), not from documentation -- the naming is easy to
+	get subtly wrong and a wrong key fails silently by just never opening the
+	space.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>gen1recomp</string>
+	<key>CFBundleExecutable</key>
+	<string>${EXECUTABLE_NAME}</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>${PRODUCT_NAME}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+
+	
+	<!-- ExtendedGamepad covers the DualSense (GCDualSenseGamepad conforms to
+	     GCExtendedGamepad). There is deliberately no spatial entry here: the
+	     PSVR2 Sense pair identifies at runtime via
+	     GCDevice.productCategory == GCProductCategorySpatialController, which
+	     is a category, not a GCSupportedGameControllers ProfileName, and their
+	     6DoF poses come from ARKit's accessory tracking rather than from
+	     GameController at all. -->
+	<key>GCSupportsControllerUserInteraction</key>
+	<true/>
+	<key>GCSupportedGameControllers</key>
+	<array>
+		<dict>
+			<key>ProfileName</key>
+			<string>ExtendedGamepad</string>
+		</dict>
+	</array>
+
+	<!-- ARKit providers. World sensing backs the device anchor that every eye
+	     pose is derived from; accessory tracking is the PSVR2 Sense grip/aim
+	     poses; hand tracking is the fallback when no controller is present.
+	     visionOS shows one consolidated sheet, so do not add keys for
+	     providers we never start. -->
+	<key>NSWorldSensingUsageDescription</key>
+	<string>Anchors the Kanto overworld in the room around you so it stays put as you move.</string>
+	<key>NSAccessoryTrackingUsageDescription</key>
+	<string>Tracks your PlayStation VR2 Sense controllers so your Pokédex and your aim follow your hands.</string>
+	<key>NSHandsTrackingUsageDescription</key>
+	<string>Lets you hold the Pokédex and point at the world with your hands when no controller is connected.</string>
+
+	<!-- Exposes the app's Documents folder so ROMs, mod .zips and .sav files
+	     can be dropped in; GRBootstrap sweeps them into the LÖVE save dir.
+	     Note there is no Finder-over-USB path to a Vision Pro, so in practice
+	     these are reached with `devicectl device copy to` -- but the keys are
+	     what make the swept file visible in the first place. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>LÖVE Project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.love2d.love-game</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.pkware.zip-archive</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>LÖVE Project</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.love2d.love-game</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>com.apple.ostype</key>
+				<string>LOVE</string>
+				<key>public.filename-extension</key>
+				<array>
+					<string>love</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/x-love-game</string>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>
