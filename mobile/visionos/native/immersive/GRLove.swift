@@ -63,6 +63,11 @@ enum GRLove {
         return cachedScreen
     }
 
+    /// Where LÖVE writes. Empty until its filesystem module is up.
+    static var saveDirectory: String {
+        String(cString: love_visionos_saveDirectory())
+    }
+
     /// Sample the virtual screen and report what is actually in it.
     ///
     /// This exists because "the app runs and does not crash" turned out, more

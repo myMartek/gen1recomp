@@ -28,4 +28,8 @@ int love_visionos_boot(void);
 /// NULL before the first setMode, or when not running headless.
 void *love_visionos_virtualScreenTexture(void);
 
+/// LOVE's save directory, once the filesystem module is up. Empty before that.
+/// This is the only reliable answer to "where do I put a ROM".
+const char *love_visionos_saveDirectory(void);
+
 #endif /* GEN1RECOMP_BRIDGING_HEADER_H */

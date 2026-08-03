@@ -78,7 +78,17 @@ if [ -n "$MOD_DIR" ]; then
   [ -f "$MOD_DIR/manifest.json" ] || fail "$MOD_DIR has no manifest.json"
   MOD_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$MOD_DIR/manifest.json")"
   [ -n "$MOD_ID" ] || fail "could not read the mod id out of $MOD_DIR/manifest.json"
-  push "$MOD_DIR" "Documents/$IDENTITY/mods/$MOD_ID"
+
+  # Stage a clean copy first. devicectl has no exclude, and copying the
+  # checkout as-is sends .git along with it -- hundreds of files of history
+  # the game will never read, on a device where every one of them has to go
+  # over the wire and then be scanned by the mod loader.
+  STAGE="$(mktemp -d)"
+  trap 'rm -rf "$STAGE"' EXIT
+  (cd "$MOD_DIR" && tar --exclude='.git' --exclude='.github' --exclude='*.dll' \
+       --exclude='__pycache__' -cf - .) | (cd "$STAGE" && tar -xf -)
+  say "staged $(find "$STAGE" -type f | wc -l | tr -d ' ') files (.git excluded)"
+  push "$STAGE" "Documents/$IDENTITY/mods/$MOD_ID"
 fi
 
 # The ROM and any loose file land in Documents/, where GRBootstrap's

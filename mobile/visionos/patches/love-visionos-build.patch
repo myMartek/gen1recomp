@@ -56,6 +56,12 @@ counting a drawable would report memory this process never allocated. The
 Metal -> LÖVE format mapping throws on anything unrecognised rather than
 guessing, because a wrong guess is silently wrong colour.
 
+
+Part 5 -- reporting the save directory. love_visionos_saveDirectory() asks the
+filesystem module where LOVE actually writes. Guessing that from platform
+convention is how a ROM ends up in a directory the engine never looks at,
+which is exactly what happened.
+
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
 --- a/src/common/config.h
@@ -231,7 +237,7 @@ index c7331ba..0c4c449 100644
  
  	uint32 dirtyRenderState;
 diff --git a/src/modules/graphics/metal/Graphics.mm b/src/modules/graphics/metal/Graphics.mm
-index c8d5b18..6ec40fc 100644
+index c8d5b18..544b0aa 100644
 --- a/src/modules/graphics/metal/Graphics.mm
 +++ b/src/modules/graphics/metal/Graphics.mm
 @@ -276,6 +276,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
@@ -242,7 +248,7 @@ index c8d5b18..6ec40fc 100644
  	, passDesc(nil)
  	, dirtyRenderState(STATEBIT_ALL)
  	, lastCullMode(CULL_MAX_ENUM)
-@@ -531,10 +532,72 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -531,10 +532,87 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	}
  }
  
@@ -253,6 +259,8 @@ index c8d5b18..6ec40fc 100644
 +// C surface that needs, kept here rather than in a new module so the patch
 +// stays inside files that already exist.
 +#ifdef LOVE_VISIONOS
++#include "filesystem/Filesystem.h"
++
 +static bool g_visionosHeadless = false;
 +
 +extern "C" void love_visionos_setHeadless(bool headless)
@@ -263,6 +271,19 @@ index c8d5b18..6ec40fc 100644
 +extern "C" bool love_visionos_getHeadless()
 +{
 +	return g_visionosHeadless;
++}
++
++// Where LOVE actually writes -- the one authority on it. Guessing this from
++// the platform conventions is how a ROM ends up in a directory the engine
++// never looks at.
++extern "C" const char *love_visionos_saveDirectory()
++{
++	static std::string dir;
++	auto fs = Module::getInstance<love::filesystem::Filesystem>(Module::M_FILESYSTEM);
++	if (fs == nullptr)
++		return "";
++	dir = fs->getSaveDirectory();
++	return dir.c_str();
 +}
 +
 +// The backbuffer LOVE has been drawing into, as an id<MTLTexture>. Returns
@@ -315,7 +336,7 @@ index c8d5b18..6ec40fc 100644
  	metalLayer.device = device;
  	metalLayer.pixelFormat = isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
  
-@@ -556,6 +619,51 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -556,6 +634,51 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	return true;
  }}
  
@@ -367,7 +388,7 @@ index c8d5b18..6ec40fc 100644
  void Graphics::unSetMode()
  { @autoreleasepool {
  	if (!isCreated())
-@@ -570,6 +678,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -570,6 +693,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	created = false;
  	metalLayer = nil;
  	activeDrawable = nil;
@@ -375,7 +396,7 @@ index c8d5b18..6ec40fc 100644
  }}
  
  void Graphics::setActive(bool enable)
-@@ -661,7 +770,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -661,7 +785,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  		const auto &rts = states.back().renderTargets;
  		if (rts.getFirstTarget().texture.get() == nullptr)
  		{
@@ -384,7 +405,7 @@ index c8d5b18..6ec40fc 100644
  			{
  				// This is reset to YES after each frame.
  				// TODO: Does setting this reallocate memory?
-@@ -671,16 +780,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -671,16 +795,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  				activeDrawable = [metalLayer nextDrawable];
  			}
  
@@ -405,7 +426,7 @@ index c8d5b18..6ec40fc 100644
  				passDesc.colorAttachments[0].resolveTexture = nil;
  			}
  
-@@ -1694,8 +1805,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1694,8 +1820,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	id<MTLBuffer> screenshotbuffer = nil;
  
@@ -418,7 +439,7 @@ index c8d5b18..6ec40fc 100644
  
  	if (!pendingScreenshotCallbacks.empty())
  	{
-@@ -1707,7 +1820,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1707,7 +1835,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  		auto blitencoder = useBlitEncoder();
  
@@ -427,7 +448,7 @@ index c8d5b18..6ec40fc 100644
  						 sourceSlice:0
  						 sourceLevel:0
  						sourceOrigin:MTLOriginMake(0, 0, 0)
-@@ -1732,6 +1845,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1732,6 +1860,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	if (cmd != nil && activeDrawable != nil)
  		[cmd presentDrawable:activeDrawable];

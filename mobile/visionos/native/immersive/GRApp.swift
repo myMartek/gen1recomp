@@ -118,6 +118,11 @@ struct GRLauncherView: View {
                     .multilineTextAlignment(.center)
             }
 
+            Text(GRLove.saveDirectory.isEmpty ? "save dir: —" : "save: \(GRLove.saveDirectory)")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+
             Text(loveStatus)
                 .font(.system(size: 15, design: .monospaced))
                 .foregroundStyle(.secondary)
