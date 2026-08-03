@@ -74,12 +74,15 @@ struct GRLauncherView: View {
     @State private var loveStatus = "virtual screen: waiting for LÖVE…"
 
     var body: some View {
-        VStack(spacing: 24) {
-            Text("gen1recomp")
-                .font(.system(size: 44, weight: .bold))
+        VStack(spacing: 16) {
+            // The live game, flat. Same texture the immersive space puts on a
+            // panel -- not pressing "Enter VR" is what playing in 2D means.
+            GRScreenView()
+                .frame(minHeight: 260)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
 
             Text(statusText)
-                .font(.title3)
+                .font(.callout)
                 .foregroundStyle(.secondary)
 
             Button(action: toggle) {
@@ -89,10 +92,6 @@ struct GRLauncherView: View {
                     .padding(.vertical, 6)
             }
             .disabled(model.immersiveState == .inTransition)
-
-            Text("The mode you are in is restored on the next launch.")
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
 
             Text(loveStatus)
                 .font(.system(size: 15, design: .monospaced))
@@ -205,7 +204,9 @@ struct GRApp: App {
             GRLauncherView()
                 .environment(model)
         }
-        .defaultSize(width: 720, height: 460)
+        // Portrait: the game frame is 1080x1920, and a landscape window
+        // letterboxes it down to a stamp.
+        .defaultSize(width: 560, height: 900)
 
         ImmersiveSpace(id: "world") {
             GRImmersiveContent(model: model)

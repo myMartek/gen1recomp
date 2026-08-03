@@ -49,3 +49,35 @@ fragment float4 gr_panel_fragment(VertexOut in [[stage_in]],
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return float4(screen.sample(s, in.uv).rgb, 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// The same texture, shown flat in a window rather than on a panel in the room.
+// A fullscreen triangle with the UVs scaled to keep the source's aspect ratio;
+// anything falling outside is discarded rather than clamped, because smearing
+// the border pixels across the letterbox reads as a rendering bug.
+
+struct FlatUniforms {
+    float2 uvScale;
+};
+
+vertex VertexOut gr_flat_vertex(uint vid [[vertex_id]])
+{
+    const float2 positions[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+    const float2 uvs[3]       = { float2( 0.0,  1.0), float2(2.0,  1.0), float2( 0.0, -1.0) };
+
+    VertexOut out;
+    out.position = float4(positions[vid], 0.0, 1.0);
+    out.uv = uvs[vid];
+    return out;
+}
+
+fragment float4 gr_flat_fragment(VertexOut in [[stage_in]],
+                                 texture2d<float> screen [[texture(0)]],
+                                 constant FlatUniforms &u [[buffer(0)]])
+{
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    float2 uv = (in.uv - 0.5) * u.uvScale + 0.5;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+        return float4(0.0, 0.0, 0.0, 1.0);
+    return float4(screen.sample(s, uv).rgb, 1.0);
+}
