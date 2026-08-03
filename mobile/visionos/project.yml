@@ -325,7 +325,7 @@ targets:
           - $(inherited)
           - "@executable_path/Frameworks"
         PRODUCT_NAME: gen1recomp-immersive
-        PRODUCT_BUNDLE_IDENTIFIER: com.gen1recomp.xr.immersive
+        PRODUCT_BUNDLE_IDENTIFIER: de.martek.pocketsim
         MARKETING_VERSION: "0.0.0"
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: $(SRCROOT)/overlays/love-visionos.plist

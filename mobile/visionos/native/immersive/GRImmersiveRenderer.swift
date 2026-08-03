@@ -36,6 +36,8 @@ final class GRImmersiveRenderer {
 
     private var panelPipeline: MTLRenderPipelineState?
     private var pipelineFormat: MTLPixelFormat = .invalid
+    private var depthFormat: MTLPixelFormat = .invalid
+    private var depthState: MTLDepthStencilState?
 
     private struct PanelUniforms {
         var modelViewProjection: matrix_float4x4
@@ -94,8 +96,8 @@ final class GRImmersiveRenderer {
         }
     }
 
-    private func pipeline(for format: MTLPixelFormat) -> MTLRenderPipelineState? {
-        if let p = panelPipeline, pipelineFormat == format { return p }
+    private func pipeline(for format: MTLPixelFormat, depth: MTLPixelFormat) -> MTLRenderPipelineState? {
+        if let p = panelPipeline, pipelineFormat == format, depthFormat == depth { return p }
         guard let library = device.makeDefaultLibrary(),
               let vfn = library.makeFunction(name: "gr_panel_vertex"),
               let ffn = library.makeFunction(name: "gr_panel_fragment")
@@ -105,8 +107,18 @@ final class GRImmersiveRenderer {
         desc.vertexFunction = vfn
         desc.fragmentFunction = ffn
         desc.colorAttachments[0].pixelFormat = format
+        desc.depthAttachmentPixelFormat = depth
         panelPipeline = try? device.makeRenderPipelineState(descriptor: desc)
         pipelineFormat = format
+        depthFormat = depth
+
+        // Reverse-Z: CompositorServices wants 1 at the near plane and 0 at the
+        // far one, so "closer" is "greater" and the buffer clears to 0.
+        let dsd = MTLDepthStencilDescriptor()
+        dsd.depthCompareFunction = .greater
+        dsd.isDepthWriteEnabled = true
+        depthState = device.makeDepthStencilState(descriptor: dsd)
+
         return panelPipeline
     }
 
@@ -123,10 +135,13 @@ final class GRImmersiveRenderer {
         LayerRenderer.Clock().wait(until: timing.optimalInputTime)
 
         frame.startSubmission()
-        guard let drawable = frame.queryDrawable() else {
-            frame.endSubmission()
-            return
-        }
+
+        // No drawable means this frame is not to be rendered. Return WITHOUT
+        // endSubmission: the compositor treats "submission ended but nothing
+        // presented" as a client error and aborts the process with
+        // BUG IN CLIENT. (The simulator tolerated it; a real Vision Pro does
+        // not, which is how this was found.)
+        guard let drawable = frame.queryDrawable() else { return }
 
         // Anchor the frame to where the device will be when it is displayed,
         // not where it is now. Handing it to the drawable also lets the
@@ -136,10 +151,8 @@ final class GRImmersiveRenderer {
         let deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: presentTime)
         drawable.deviceAnchor = deviceAnchor
 
-        guard let commandBuffer = queue.makeCommandBuffer() else {
-            frame.endSubmission()
-            return
-        }
+        // Same rule as above: nothing to present, so nothing to end.
+        guard let commandBuffer = queue.makeCommandBuffer() else { return }
 
         let screen = GRLove.virtualScreen
         let originFromDevice = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
@@ -155,10 +168,26 @@ final class GRImmersiveRenderer {
             // this is the room around the panel, and it should not glow.
             pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.02, green: 0.02, blue: 0.04, alpha: 1.0)
 
+            // The depth attachment is NOT optional. A drawable carries one per
+            // view and the compositor reprojects against it; submitting a frame
+            // that never wrote depth is a client error, and on device it aborts
+            // the process inside cp_frame_end_submission. (The simulator does
+            // not reproject, which is why it tolerated this.)
+            var depthTexture: MTLTexture? = nil
+            if index < drawable.depthTextures.count {
+                depthTexture = drawable.depthTextures[index]
+                pass.depthAttachment.texture = depthTexture
+                pass.depthAttachment.loadAction = .clear
+                pass.depthAttachment.storeAction = .store
+                // 0 is the far plane under reverse-Z.
+                pass.depthAttachment.clearDepth = 0.0
+            }
+
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
 
             if let screen,
-               let pipeline = pipeline(for: target.pixelFormat),
+               let pipeline = pipeline(for: target.pixelFormat,
+                                       depth: depthTexture?.pixelFormat ?? .invalid),
                index < drawable.views.count {
 
                 let view = drawable.views[index]
@@ -179,6 +208,7 @@ final class GRImmersiveRenderer {
                     halfSize: SIMD2(width * 0.5, panelHeight * 0.5))
 
                 encoder.setRenderPipelineState(pipeline)
+                if let depthState { encoder.setDepthStencilState(depthState) }
                 encoder.setVertexBytes(&uniforms, length: MemoryLayout<PanelUniforms>.stride, index: 0)
                 encoder.setFragmentTexture(screen, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)

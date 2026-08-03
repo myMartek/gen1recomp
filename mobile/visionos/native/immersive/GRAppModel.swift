@@ -42,6 +42,35 @@ final class GRAppModel {
         set { UserDefaults.standard.set(newValue, forKey: Self.lastModeKey) }
     }
 
+    // MARK: - Not restoring into a broken state
+
+    /// Set while the immersive space is open, cleared when it closes cleanly.
+    ///
+    /// If it is still set at launch, the previous session ended while immersed
+    /// without ever closing the space -- a crash, or a force quit. Restoring
+    /// into immersion then would drop the player straight back into whatever
+    /// was broken, with no window to escape from, and the same thing would
+    /// happen on every subsequent launch. So a session that did not end
+    /// cleanly always comes back windowed.
+    private static let immersiveActiveKey = "GRImmersiveSessionActive"
+
+    private var immersiveSessionActive: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.immersiveActiveKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.immersiveActiveKey)
+            // Written straight away rather than at the next synchronisation
+            // point: the whole purpose of this flag is to survive a process
+            // that is about to die unexpectedly.
+            UserDefaults.standard.synchronize()
+        }
+    }
+
+    /// True when the last run ended while immersed without closing the space.
+    let previousSessionEndedBadly: Bool = UserDefaults.standard.bool(forKey: "GRImmersiveSessionActive")
+
+    func markImmersiveSessionStarted() { immersiveSessionActive = true }
+    func markImmersiveSessionEnded()   { immersiveSessionActive = false }
+
     /// Set once the first launch-time restore has been attempted, so that
     /// re-rendering the launcher view cannot trigger it again.
     var didRestoreOnLaunch = false
@@ -71,6 +100,7 @@ final class GRAppModel {
     func immersiveSpaceEnded() {
         immersiveState = .closed
         wantsImmersiveOnLaunch = false
+        markImmersiveSessionEnded()
         openWindowAction?(Self.launcherWindowID)
     }
 }

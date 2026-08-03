@@ -1,14 +1,14 @@
-Make LÖVE build for visionOS, render without a presentable layer, and boot
-from a host that owns @main and its main thread.
+Make LÖVE build for visionOS, render without a presentable layer, boot from a
+host that owns @main and its main thread, and adopt textures it did not create.
 
-Part 1 -- building at all. visionOS defines TARGET_OS_IPHONE, so config.h
-takes the LOVE_IOS branch and the iOS backend compiles, which is what we want:
-Metal, the iOS filesystem layout, the SDL3 UIKit path. Three things stop it:
+Part 1 -- building at all. visionOS defines TARGET_OS_IPHONE, so config.h takes
+the LOVE_IOS branch and the iOS backend compiles, which is what we want: Metal,
+the iOS filesystem layout, the SDL3 UIKit path. Three things stop it:
 
   1. common/ios.mm uses UIScreen in showGameList; visionOS has none, because
      there is no single "main screen" to take bounds from. That function is
-     LÖVE's picker for several .love files and is unreachable for a bundle
-     with one fused game.love, so it only has to compile.
+     LÖVE's picker for several .love files and is unreachable for a bundle with
+     one fused game.love, so it only has to compile.
   2. graphics/Graphics.cpp calls opengl::createInstance() unconditionally while
      the Vulkan and Metal backends beside it are already guarded. Every GLES
      symbol in XROS.sdk is API_UNAVAILABLE(visionos).
@@ -25,46 +25,36 @@ working against it; only presentDrawable is skipped. MTLStorageModeShared so
 the host can read it back without a staging blit -- free on unified memory.
 
 Part 3 -- booting from a host that owns @main AND the main thread.
-love_visionos_boot() runs LÖVE without a main(); LOVE_NO_MAIN suppresses
-LÖVE's main() and SDL_main.h's takeover with it (SDL_MAIN_HANDLED), which
-otherwise leaves an undefined _SDL_main.
+love_visionos_boot() runs LÖVE without a main(); LOVE_NO_MAIN suppresses LÖVE's
+main() and SDL_main.h's takeover with it (SDL_MAIN_HANDLED), which otherwise
+leaves an undefined _SDL_main.
 
-The substantial part is that Window::setWindow gets a headless path that
-creates NO SDL window at all. This is not an optimisation. SDL's UIKit backend
-touches UIApplication during both video init and window creation, and
-BoardServices asserts a main-run-loop barrier at each -- so with LÖVE on a
-thread of its own, which it must be for the host to keep its main thread for
-SwiftUI and CompositorServices, any of it traps. Everything the normal path
-does after that point exists to create, place, raise and describe an SDL
-window; none of it applies. The graphics backend is configured directly
-against a null context instead. love_visionos_prepareOnMainThread() still
-brings SDL's video and event subsystems up on the main thread first, so LÖVE's
-own SDL_InitSubSystem is a refcount bump that touches nothing.
+Window::setWindow gets a headless path that creates NO SDL window at all. This
+is not an optimisation. SDL's UIKit backend touches UIApplication during both
+video init and window creation, and BoardServices asserts a main-run-loop
+barrier at each -- so with LÖVE on a thread of its own, which it must be for
+the host to keep its main thread for SwiftUI and CompositorServices, any of it
+traps. love_visionos_prepareOnMainThread() brings SDL's video and event
+subsystems up on the main thread first, so LÖVE's own SDL_InitSubSystem is a
+refcount bump that touches nothing.
 
-All of this is gated on love_visionos_getHeadless(), a runtime flag rather than
+All of it is gated on love_visionos_getHeadless(), a runtime flag rather than
 an #ifdef, so the flat visionOS build keeps presenting through SDL's layer
 exactly as on iOS.
 
-diff --git a/src/common/config.h b/src/common/config.h
-index e52e220..c94ca0e 100644
-
-Part 4 -- adopting textures LOVE did not create. metal::Texture gains a
-constructor that takes an existing id<MTLTexture>, and metal::Graphics a
-newTextureFromHandle() that wraps one as a render target. This is what lets
-the voxel mod draw straight into CompositorServices drawables instead of into
-its own canvases followed by a copy.
+Part 4 -- adopting textures LÖVE did not create. metal::Texture gains a
+constructor taking an existing id<MTLTexture>, and metal::Graphics a
+newTextureFromHandle() that wraps one as a render target, so a renderer can
+draw straight into CompositorServices drawables instead of into its own
+canvases followed by a copy.
 
 No ownership flag: under ARC, assigning retains and the destructor's
-texture = nil releases only our reference, so sharing is already safe. No MSAA
-companion either -- a drawable arrives resolved, and allocating a private MSAA
-texture for one we do not own would quietly double memory the compositor has
-already budgeted. And no updateGraphicsMemorySize(), because counting a
-drawable would make love.graphics.getStats() report memory this process never
-allocated.
-
-The Metal -> LOVE pixel-format mapping is deliberately not exhaustive. An
-unrecognised format throws rather than guessing: a wrong guess would produce
-silently incorrect colours, which is far harder to notice than a failure.
+texture = nil releases only our reference. No MSAA companion: a drawable
+arrives resolved, and a private MSAA texture for one we do not own would
+double memory the compositor already budgeted. No updateGraphicsMemorySize():
+counting a drawable would report memory this process never allocated. The
+Metal -> LÖVE format mapping throws on anything unrecognised rather than
+guessing, because a wrong guess is silently wrong colour.
 
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644

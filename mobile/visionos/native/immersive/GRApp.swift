@@ -129,6 +129,17 @@ struct GRLauncherView: View {
             // while one is already open is an error rather than a no-op.
             guard !model.didRestoreOnLaunch else { return }
             model.didRestoreOnLaunch = true
+
+            if model.previousSessionEndedBadly {
+                // Last run died while immersed. Come back windowed rather than
+                // dropping straight into whatever broke, with no window to get
+                // out from -- otherwise every launch repeats it.
+                GRLove.log.notice("previous session ended while immersed; starting windowed")
+                model.markImmersiveSessionEnded()
+                model.wantsImmersiveOnLaunch = false
+                return
+            }
+
             if model.wantsImmersiveOnLaunch { await open() }
         }
     }
@@ -165,6 +176,7 @@ struct GRLauncherView: View {
         case .opened:
             model.immersiveState = .open
             model.wantsImmersiveOnLaunch = true
+            model.markImmersiveSessionStarted()
             // Get the flat window out of the way once the world is up. It is
             // not gone for good: leaving immersion brings it straight back.
             dismissWindow(id: GRAppModel.launcherWindowID)
