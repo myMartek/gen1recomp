@@ -1,0 +1,62 @@
+Teach openal-soft that visionOS is a device platform, not desktop macOS.
+
+Three guards miss visionOS, all with the same root cause: TARGET_OS_IPHONE is
+1 there but TARGET_OS_IOS is 0, and CMAKE_SYSTEM_NAME is visionOS -- so every
+test written as "iOS or tvOS, else desktop macOS" silently takes the macOS
+branch.
+
+  1. common/alsem.h selects between libdispatch and POSIX semaphores. visionOS
+     falls through to sem_init, which is NOT implemented on any Apple platform
+     (it fails with ENOSYS), so al::semaphore's constructor throws
+     resource_unavailable_try_again out of ContextBase's constructor and out
+     of alcCreateContext -- which is noexcept, so the process aborts. Every
+     app linking this on visionOS dies the first time it opens an audio
+     context, whatever backend is selected.
+  2. alc/backends/coreaudio.cpp includes <IOKit/audio/IOAudioTypes.h> for
+     device enumeration. XROS.sdk has no such header; enumeration is macOS-only
+     here, exactly as on iOS and tvOS.
+  3. CMakeLists.txt links -framework AudioUnit -framework ApplicationServices.
+     Neither is linkable on visionOS; AudioUnit is subsumed by AudioToolbox and
+     ApplicationServices does not exist.
+
+Upstreamable as-is.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 060a740..c02c9b7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1130,7 +1130,7 @@ if(ALSOFT_BACKEND_COREAUDIO)
+         set(BACKENDS  "${BACKENDS} CoreAudio,")
+ 
+         set(EXTRA_LIBS -Wl,-framework,CoreAudio ${EXTRA_LIBS})
+-        if(CMAKE_SYSTEM_NAME MATCHES "^(iOS|tvOS)$")
++        if(CMAKE_SYSTEM_NAME MATCHES "^(iOS|tvOS|visionOS)$")
+             find_library(COREFOUNDATION_FRAMEWORK NAMES CoreFoundation)
+             if(COREFOUNDATION_FRAMEWORK)
+                 set(EXTRA_LIBS -Wl,-framework,CoreFoundation ${EXTRA_LIBS})
+diff --git a/alc/backends/coreaudio.cpp b/alc/backends/coreaudio.cpp
+index 138859c..d835fc9 100644
+--- a/alc/backends/coreaudio.cpp
++++ b/alc/backends/coreaudio.cpp
+@@ -46,7 +46,7 @@
+ #include <AudioUnit/AudioUnit.h>
+ #include <AudioToolbox/AudioToolbox.h>
+ 
+-#if TARGET_OS_IOS || TARGET_OS_TV
++#if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION
+ #define CAN_ENUMERATE 0
+ #else
+ #include <IOKit/audio/IOAudioTypes.h>
+diff --git a/common/alsem.h b/common/alsem.h
+index b23a54a..a0dfcf3 100644
+--- a/common/alsem.h
++++ b/common/alsem.h
+@@ -4,7 +4,7 @@
+ #if defined(__APPLE__)
+ #include <AvailabilityMacros.h>
+ #include <TargetConditionals.h>
+-#if (((MAC_OS_X_VERSION_MIN_REQUIRED > 1050) && !defined(__ppc__)) || TARGET_OS_IOS || TARGET_OS_TV)
++#if (((MAC_OS_X_VERSION_MIN_REQUIRED > 1050) && !defined(__ppc__)) || TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION)
+ #include <dispatch/dispatch.h>
+ #define AL_APPLE_HAVE_DISPATCH 1
+ #else
