@@ -44,16 +44,20 @@ final class GRImmersiveRenderer {
         var halfSize: SIMD2<Float>
     }
 
-    /// Where the panel hangs, in ARKit world space: straight ahead, level with
-    /// the eyes, far enough not to feel pressed against your face.
+    /// Where the panel hangs, captured from the head on the first tracked
+    /// frame rather than fixed in world space.
     ///
-    /// y = 0 because ARKit's world origin on visionOS sits at the device's
-    /// height when the session starts, NOT on the floor. (Placing it at 1.35
-    /// first put the panel a metre and a bit above eye level, which is how
-    /// this was established.) That matches OpenXR's LOCAL space, which is what
-    /// the mod's VRRig already assumes -- so the mod's anchoring maths carries
-    /// over unchanged.
-    private let panelCentre = SIMD3<Float>(0, 0, -2.0)
+    /// A constant was wrong twice, in opposite directions, because ARKit's
+    /// world origin is not in the same place on the simulator as on the
+    /// device: y = 1.35 floated a metre above eye level in the simulator, and
+    /// y = 0 sat on the floor on a real Vision Pro. Rather than guess a third
+    /// time, this places the panel at the height the head actually is, two
+    /// metres along the direction it is actually facing -- correct wherever
+    /// the origin happens to be.
+    private var panelCentre: SIMD3<Float>?
+    private var panelYaw: Float = 0
+
+    private let panelDistance: Float = 2.0
     /// Sized by HEIGHT, not width: the game frame is portrait, so driving the
     /// size from the width made a panel nearly three metres tall -- taller
     /// than the field of view at two metres away.
@@ -208,10 +212,31 @@ final class GRImmersiveRenderer {
                 let viewMatrix = worldFromView.inverse
                 let projection = drawable.computeProjection(viewIndex: index)
 
-                // The panel faces -Z, which is the direction the player is
-                // looking at world origin, so no rotation is needed.
+                // Placed once, on the first frame with a real head pose, and
+                // then left alone: a panel that chased the head would defeat
+                // the whole point of world-locking it.
+                if panelCentre == nil, deviceAnchor != nil {
+                    let headPos = SIMD3<Float>(originFromDevice.columns.3.x,
+                                               originFromDevice.columns.3.y,
+                                               originFromDevice.columns.3.z)
+                    // -Z of the head transform is where the player is looking.
+                    let fwd = -SIMD3<Float>(originFromDevice.columns.2.x,
+                                            0,
+                                            originFromDevice.columns.2.z)
+                    let len = simd_length(fwd)
+                    let dir = len > 0.001 ? fwd / len : SIMD3<Float>(0, 0, -1)
+                    panelCentre = headPos + dir * panelDistance
+                    panelYaw = atan2(dir.x, dir.z)
+                }
+                guard let centre = panelCentre else { encoder.endEncoding(); continue }
+
+                // Turned to face where the player was looking when it was
+                // placed, so it is square-on rather than edge-on.
                 var model = matrix_identity_float4x4
-                model.columns.3 = SIMD4<Float>(panelCentre, 1)
+                let c = cos(panelYaw), sn = sin(panelYaw)
+                model.columns.0 = SIMD4<Float>( c, 0, -sn, 0)
+                model.columns.2 = SIMD4<Float>(sn, 0,   c, 0)
+                model.columns.3 = SIMD4<Float>(centre, 1)
 
                 let width = panelHeight * Float(screen.width) / Float(screen.height)
                 var uniforms = PanelUniforms(
