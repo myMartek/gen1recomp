@@ -49,11 +49,14 @@ mobile/visionos/love-src/
 mobile/visionos/cache/
 mobile/visionos/build/
 
-# xros dependency slices built by scripts/build_visionos.sh --deps (LuaJIT,
+# xros dependency slices built by mobile/visionos/deps/build_deps.sh (LuaJIT,
 # openal-soft, SDL3, FreeType, HarfBuzz, ogg, vorbis). Built, never committed:
 # love-apple-dependencies ships no xros slices, and committing third-party
 # binaries would pull in a THIRD_PARTY_NOTICES obligation for each one.
-mobile/visionos/deps/
+# The builder and its patches DO belong in the repo, hence the narrow rules.
+mobile/visionos/deps/*.xcframework/
+mobile/visionos/deps/src/
+mobile/visionos/deps/build/
 
 # XcodeGen output — regenerated from mobile/visionos/project.yml on every build
 mobile/visionos/*.xcodeproj/

@@ -1,0 +1,22 @@
+# Pinned sources for mobile/visionos/deps/build_deps.sh.
+#
+# love-apple-dependencies ships no xros slices -- every LibraryIdentifier in
+# its xcframeworks is ios-*, macos-* or *-simulator. So this file, not that
+# repo, is what fixes the visionOS dependency set. The hash of this file is
+# also the CI cache key for mobile/visionos/deps/, so a bump here correctly
+# invalidates a stale cache.
+#
+# Format: <name> <git-url> <ref>
+# Lines starting with # and blank lines are ignored.
+
+# Order is dependency order: `build_deps.sh` with no arguments walks this file
+# top to bottom, and each dep is configured against the staged builds of the
+# ones above it (vorbis needs ogg, harfbuzz needs freetype).
+
+luajit    https://github.com/LuaJIT/LuaJIT.git                  v2.1
+ogg       https://github.com/xiph/ogg.git                       v1.3.5
+vorbis    https://github.com/xiph/vorbis.git                    v1.3.7
+freetype  https://gitlab.freedesktop.org/freetype/freetype.git   VER-2-13-3
+harfbuzz  https://github.com/harfbuzz/harfbuzz.git              10.4.0
+sdl3      https://github.com/libsdl-org/SDL.git                 release-3.2.24
+openal    https://github.com/kcat/openal-soft.git               1.24.3
