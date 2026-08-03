@@ -47,9 +47,20 @@ enum GRLove {
     }
 
     /// The texture LÖVE is drawing into, once it has set a mode.
+    ///
+    /// Cached after the first success. The lookup behind it walks LÖVE's
+    /// module registry and does a dynamic_cast, from a thread that is not
+    /// LÖVE's -- doing that every frame was both wasteful and racy, and an
+    /// occasional nil made the view present a cleared black frame instead of
+    /// the game. Alternating black and picture is precisely the flicker that
+    /// caused. The texture is created once in setMode and never replaced.
+    private static var cachedScreen: MTLTexture?
+
     static var virtualScreen: MTLTexture? {
+        if let cached = cachedScreen { return cached }
         guard let raw = love_visionos_virtualScreenTexture() else { return nil }
-        return Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue() as? MTLTexture
+        cachedScreen = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue() as? MTLTexture
+        return cachedScreen
     }
 
     /// Sample the virtual screen and report what is actually in it.

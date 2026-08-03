@@ -70,6 +70,11 @@ struct GRScreenView: UIViewRepresentable {
         }
 
         func draw(in view: MTKView) {
+            // Nothing to show yet: return WITHOUT presenting, so the window
+            // keeps whatever it last had. Presenting a cleared frame here is
+            // what turns "LÖVE is still starting" into a black flash.
+            guard let screen = GRLove.virtualScreen else { return }
+
             guard let queue,
                   let drawable = view.currentDrawable,
                   let pass = view.currentRenderPassDescriptor,
@@ -77,8 +82,7 @@ struct GRScreenView: UIViewRepresentable {
                   let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass)
             else { return }
 
-            if let screen = GRLove.virtualScreen,
-               let pipeline = pipeline(for: view.colorPixelFormat) {
+            if let pipeline = pipeline(for: view.colorPixelFormat) {
 
                 // Fit without distorting: the game frame is portrait and the
                 // window generally is not.
