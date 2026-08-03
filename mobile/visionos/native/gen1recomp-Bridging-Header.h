@@ -28,6 +28,14 @@ int love_visionos_boot(void);
 /// NULL before the first setMode, or when not running headless.
 void *love_visionos_virtualScreenTexture(void);
 
+/// Hands the compositor's layer renderer to love.xr. Until Lua claims it the
+/// host keeps drawing; see love_visionos_xrClaimed.
+void love_visionos_setLayerRenderer(void *layerRenderer);
+
+/// True while Lua owns the frame loop. The host's renderer must stand down:
+/// two loops calling cp_frame_* on one layer is a race.
+bool love_visionos_xrClaimed(void);
+
 /// LOVE's save directory, once the filesystem module is up. Empty before that.
 /// This is the only reliable answer to "where do I put a ROM".
 const char *love_visionos_saveDirectory(void);

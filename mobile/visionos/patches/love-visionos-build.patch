@@ -663,10 +663,10 @@ index f3b0966..071f5b2 100644
  			{
 diff --git a/src/modules/xr/wrap_XR.h b/src/modules/xr/wrap_XR.h
 new file mode 100644
-index 0000000..ab42b73
+index 0000000..05bf9ce
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS. See wrap_XR.mm.
 + */
@@ -683,16 +683,17 @@ index 0000000..ab42b73
 +
 +/// Handed over by the host once SwiftUI has a layer renderer and ARKit is up.
 +extern "C" void love_visionos_setLayerRenderer(void *layerRenderer);
-+extern "C" void love_visionos_setWorldTracking(void *provider);
++/// True while Lua owns the frame loop; the host's renderer stands down.
++extern "C" bool love_visionos_xrClaimed(void);
 +
 +#endif // LOVE_VISIONOS
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..4abe986
+index 0000000..966a894
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,384 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -744,7 +745,13 @@ index 0000000..4abe986
 +// calls beginFrame, draws, then submitFrame. Holding these here rather than
 +// handing opaque values to Lua keeps cdata out of the mod entirely.
 +static cp_layer_renderer_t g_layer = nullptr;
++static ar_session_t g_arSession = nullptr;
 +static ar_world_tracking_provider_t g_worldTracking = nullptr;
++
++// Set while Lua owns the frame loop. The host's own renderer polls this and
++// stands down: two loops calling cp_frame_* on one layer would be a race, and
++// the host keeps drawing until the mod actually turns VR on.
++static bool g_claimed = false;
 +
 +static cp_frame_t g_frame = nullptr;
 +static cp_drawable_t g_drawable = nullptr;
@@ -770,9 +777,9 @@ index 0000000..4abe986
 +	g_layer = (__bridge cp_layer_renderer_t) layerRenderer;
 +}
 +
-+extern "C" void love_visionos_setWorldTracking(void *provider)
++extern "C" bool love_visionos_xrClaimed()
 +{
-+	g_worldTracking = (__bridge ar_world_tracking_provider_t) provider;
++	return g_claimed;
 +}
 +
 +// ---------------------------------------------------------------- Lua API
@@ -808,6 +815,49 @@ index 0000000..4abe986
 + * everything sampled after it -- head pose above all -- is as close as it can
 + * be to the moment the frame is actually shown.
 + */
++/**
++ * Takes the frame loop from the host and brings world tracking up.
++ *
++ * ARKit is started here rather than passed in from the host: its C API is
++ * available, and a provider created on the far side of a language boundary
++ * would have to be handed over as an opaque pointer with a lifetime nobody
++ * owns clearly.
++ */
++static int w_claim(lua_State *L)
++{
++	if (g_layer == nullptr)
++	{
++		luax_pushboolean(L, false);
++		return 1;
++	}
++
++	if (g_worldTracking == nullptr)
++	{
++		g_worldTracking = ar_world_tracking_provider_create(
++			ar_world_tracking_configuration_create());
++
++		ar_data_providers_t providers = ar_data_providers_create();
++		ar_data_providers_add_data_provider(providers, g_worldTracking);
++
++		g_arSession = ar_session_create();
++		ar_session_run(g_arSession, providers);
++	}
++
++	g_claimed = true;
++	luax_pushboolean(L, true);
++	return 1;
++}
++
++static int w_release(lua_State *L)
++{
++	g_claimed = false;
++	// Any frame still open is abandoned deliberately: ending its submission
++	// without a present is a client error the compositor aborts on.
++	g_frame = nullptr;
++	g_drawable = nullptr;
++	return 0;
++}
++
 +static int w_beginFrame(lua_State *L)
 +{
 +	if (g_layer == nullptr)
@@ -1007,6 +1057,8 @@ index 0000000..4abe986
 +static const luaL_Reg functions[] =
 +{
 +	{ "available",   w_available   },
++	{ "claim",       w_claim       },
++	{ "release",     w_release     },
 +	{ "state",       w_state       },
 +	{ "beginFrame",  w_beginFrame  },
 +	{ "views",       w_views       },

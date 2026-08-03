@@ -87,7 +87,14 @@ final class GRImmersiveRenderer {
                 // spin.
                 layerRenderer.waitUntilRunning()
             case .running:
-                renderFrame()
+                // Lua owns the loop once the mod turns VR on. Both of us
+                // calling cp_frame_* on one layer would race, so this stands
+                // down entirely rather than trying to interleave.
+                if love_visionos_xrClaimed() {
+                    usleep(4000)
+                } else {
+                    renderFrame()
+                }
             case .invalidated:
                 return
             @unknown default:

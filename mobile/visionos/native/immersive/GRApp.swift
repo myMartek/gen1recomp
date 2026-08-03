@@ -25,6 +25,12 @@ struct GRImmersiveContent: CompositorContent {
             // The frame loop owns this thread for the lifetime of the space.
             // 8 MiB rather than the 512 KiB default because this thread will
             // eventually be running LÖVE, whose Lua call depth is not shallow.
+            // Hand the layer to love.xr straight away. The mod claims it when
+            // its VR row goes on; until then the host's renderer below keeps
+            // drawing, so turning VR off leaves something on screen rather
+            // than nothing.
+            love_visionos_setLayerRenderer(Unmanaged.passUnretained(layerRenderer as AnyObject).toOpaque())
+
             let model = self.model
             let thread = Thread {
                 if let renderer = GRImmersiveRenderer(layerRenderer) {
