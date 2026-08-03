@@ -74,6 +74,7 @@ struct GRLauncherView: View {
     @State private var loveStatus = "virtual screen: waiting for LÖVE…"
     @State private var showRomPicker = false
     @State private var romMessage: String = ""
+    @State private var pads = GRControllers()
 
     var body: some View {
         VStack(spacing: 16) {
@@ -97,6 +98,18 @@ struct GRLauncherView: View {
                 Button("Import ROM…") { showRomPicker = true }
             }
             .font(.title3)
+
+            // What the controller is and what it is sending. Press a button
+            // that does nothing in the game and its real name appears here --
+            // which is the only way to tell "not mapped" from "not arriving".
+            VStack(spacing: 2) {
+                ForEach(pads.devices, id: \.self) { Text($0) }
+                if !pads.recent.isEmpty {
+                    Text(pads.recent.joined(separator: "  ")).foregroundStyle(.primary)
+                }
+            }
+            .font(.system(size: 13, design: .monospaced))
+            .foregroundStyle(.secondary)
 
             if !romMessage.isEmpty {
                 Text(romMessage)
@@ -137,6 +150,7 @@ struct GRLauncherView: View {
             // presentation is showing: both the window and the immersive space
             // consume the same virtual screen, so neither owns its lifetime.
             GRLove.bootOnce()
+            pads.start()
 
             // Hand the window actions to the model. Whatever ends immersion --
             // possibly the Digital Crown, with no view of ours involved --
