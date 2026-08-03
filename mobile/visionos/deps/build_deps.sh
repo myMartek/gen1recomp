@@ -87,6 +87,27 @@ fetch() {
   local name="$1" url ref dir
   url="$(pin_url "$name")"; ref="$(pin_ref "$name")"; dir="$SRC_DIR/$name"
   [ -n "$url" ] || fail "$name is not pinned in $VERSIONS"
+
+  # Release tarball rather than a git ref. libtheora needs this: its git tags
+  # carry no generated `configure`, and regenerating one would put automake on
+  # the list of things a contributor must install. The release tarballs ship
+  # configure ready to run.
+  case "$url" in
+    *.tar.gz|*.tar.bz2|*.tar.xz)
+      if [ ! -d "$dir" ]; then
+        say "$name: downloading $ref"
+        local tmp; tmp="$(mktemp -d)"
+        curl -fsSL "$url" -o "$tmp/src.tar" || fail "$name: download failed: $url"
+        mkdir -p "$dir"
+        tar -xf "$tmp/src.tar" -C "$dir" --strip-components=1 \
+          || fail "$name: extract failed"
+        rm -rf "$tmp"
+      fi
+      apply_patches "$name"
+      return 0
+      ;;
+  esac
+
   if [ -d "$dir/.git" ]; then
     # Already at the pinned ref? Leave it alone -- re-cloning openal-soft and
     # SDL on every run is minutes of nothing.
@@ -140,10 +161,27 @@ make_xcframework() {
   xcodebuild -create-xcframework "${args[@]}" -output "$out" >/dev/null \
     || fail "$name: -create-xcframework failed"
   say "$name -> $(basename "$out")"
+  publish_headers "$name" "$out"
   # A wrong-platform slice is the failure mode this whole script exists to
   # avoid, and -create-xcframework will happily package one. Say what landed.
   /usr/libexec/PlistBuddy -c 'Print :AvailableLibraries' "$out/Info.plist" 2>/dev/null \
     | grep -E 'LibraryIdentifier|SupportedPlatform' | sed 's/^/    /' || true
+}
+
+# Mirror a dependency's headers into one flat deps/include/ tree.
+#
+# Xcode propagates an xcframework's Headers dir to targets that *link* it, but
+# liblove is a static library and links nothing -- so without this, every
+# #include <lua.h> in LÖVE fails. One merged tree also spares project.yml from
+# naming per-slice paths like xros-arm64/Headers, which would be wrong the
+# moment you build for the simulator. Device and simulator headers are
+# identical for all of these libraries, so taking one side is safe.
+publish_headers() {
+  local name="$1" xcf="$2" src
+  src="$(find "$xcf" -maxdepth 2 -type d -name Headers | grep -v simulator | head -1)"
+  [ -n "$src" ] || return 0
+  mkdir -p "$DEPS_DIR/include"
+  cp -R "$src"/. "$DEPS_DIR/include/"
 }
 
 # Verify a built object really targets visionOS. Cheap, and catches the case
@@ -269,6 +307,23 @@ cmake_dep() {
     local lib
     lib="$(find "$stage" "$work" -name "$libfile" -type f 2>/dev/null | head -1)"
     [ -n "$lib" ] || { fail "$name: $libfile not produced under $work"; }
+
+    # Some projects emit several archives that belong to one logical library
+    # (libvorbis + libvorbisfile + libvorbisenc). An xcframework slice holds
+    # exactly one, so fold them together here instead of shipping one
+    # xcframework per archive.
+    if [ -n "${MERGE_LIBS:-}" ]; then
+      local merged="$work/_merged/${MERGE_INTO_LIB}" inputs=() m found
+      mkdir -p "$work/_merged"
+      for m in $MERGE_LIBS; do
+        found="$(find "$stage" -name "$m" -type f 2>/dev/null | head -1)"
+        [ -n "$found" ] && inputs+=("$found")
+      done
+      [ ${#inputs[@]} -gt 0 ] || fail "$name: none of MERGE_LIBS found under $stage"
+      libtool -static -o "$merged" "${inputs[@]}" 2>/dev/null \
+        || fail "$name: libtool merge failed"
+      lib="$merged"
+    fi
     assert_platform "$lib" \
       "$([ "$sdk" = xros ] && echo VISIONOS || echo VISIONOSSIMULATOR)"
 
@@ -302,7 +357,14 @@ build_ogg() {
 build_vorbis() {
   # Depends on ogg, resolved from the staged xros build via CMAKE_PREFIX_PATH.
   build_ogg_if_missing
+  # libvorbis builds three archives (vorbis, vorbisfile, vorbisenc) and LÖVE
+  # needs at least vorbis + vorbisfile (ov_open_callbacks and friends). An
+  # xcframework slice holds exactly one library, so merge them first rather
+  # than shipping three xcframeworks for one upstream project.
+  MERGE_INTO_LIB="libvorbis.a"
+  MERGE_LIBS="libvorbis.a libvorbisfile.a libvorbisenc.a"
   cmake_dep vorbis libvorbis.a @stage -DINSTALL_DOCS=OFF -DBUILD_TESTING=OFF
+  MERGE_INTO_LIB=""; MERGE_LIBS=""
 }
 
 build_freetype() {
@@ -321,6 +383,61 @@ build_harfbuzz() {
     -DHB_HAVE_FREETYPE=ON -DHB_HAVE_CORETEXT=OFF \
     -DHB_HAVE_GLIB=OFF -DHB_HAVE_ICU=OFF -DHB_BUILD_TESTS=OFF \
     -DHB_BUILD_SUBSET=OFF -DHB_BUILD_UTILS=OFF
+}
+
+build_theora() {
+  # LÖVE's video module is not optional in practice: config.h defines
+  # LOVE_ENABLE_VIDEO unconditionally, and modules/graphics is entangled with
+  # it (Graphics::newVideo, wrap_Graphics, Graphics.h). Excluding video would
+  # mean patching the graphics module -- far more upstream surface than
+  # building one small BSD-licensed decoder. The game ships no video; this
+  # exists purely so liblove compiles unmodified.
+  #
+  # Autotools rather than CMake because libtheora has no CMakeLists at any
+  # tag. The release tarball ships a generated `configure`, so no automake.
+  build_ogg_if_missing
+  fetch theora
+  local libs=()
+  for slice in "${SLICES[@]}"; do
+    local sdk="${slice%%:*}" triple="${slice##*:}"
+    local work="$BUILD_DIR/theora/$sdk"
+    local stage="$BUILD_DIR/_stage/theora/$sdk"
+    local ogg="$BUILD_DIR/_stage/ogg/$sdk"
+    local sysroot; sysroot="$(sdk_path "$sdk")"
+    say "theora: $triple"
+    rm -rf "$work" "$stage"; mkdir -p "$work" "$stage"
+    (
+      cd "$work"
+      # --host only has to be a triple this tarball's config.sub recognises and
+      # will not try to execute; it exists to put configure in cross mode. The
+      # real target comes from -target in CFLAGS. Note "aarch64-apple-darwin"
+      # is rejected by libtheora 1.1.1's vintage config.sub -- use arm-.
+      "$SRC_DIR/theora/configure" \
+        --host=arm-apple-darwin \
+        --prefix="$stage" \
+        --disable-shared --enable-static \
+        --disable-examples --disable-spec \
+        --disable-oggtest --disable-vorbistest --disable-sdltest \
+        --disable-asm \
+        --with-ogg="$ogg" \
+        CC=clang \
+        CFLAGS="-isysroot $sysroot -target $triple -O2 -fPIC" \
+        LDFLAGS="-isysroot $sysroot -target $triple"
+      make -j"$(sysctl -n hw.ncpu)"
+      make install
+    ) >"$work/build.log" 2>&1 \
+      || { tail -30 "$work/build.log"; fail "theora: build failed for $triple"; }
+    assert_platform "$stage/lib/libtheora.a" \
+      "$([ "$sdk" = xros ] && echo VISIONOS || echo VISIONOSSIMULATOR)"
+    libs+=("$stage/lib/libtheora.a" "$stage/include")
+  done
+  make_xcframework theora "${libs[@]}"
+}
+
+build_modplug() {
+  # LÖVE's sound module includes <modplug.h> unconditionally, same story as
+  # theora: not worth patching the engine to remove a decoder.
+  cmake_dep modplug libmodplug.a @stage
 }
 
 build_sdl3() {
@@ -365,7 +482,7 @@ build_freetype_if_missing() { [ -d "$DEPS_DIR/freetype.xcframework" ] || build_f
 # =================================================================== main
 # Order matters: dependents come after what they link against, so the staged
 # prefixes exist when find_package() runs.
-BUILDERS_AVAILABLE="luajit ogg vorbis freetype harfbuzz sdl3 openal"
+BUILDERS_AVAILABLE="luajit ogg vorbis theora modplug freetype harfbuzz sdl3 openal"
 
 build_one() {
   local name="$1"

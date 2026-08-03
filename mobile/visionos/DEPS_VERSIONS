@@ -16,7 +16,11 @@
 luajit    https://github.com/LuaJIT/LuaJIT.git                  v2.1
 ogg       https://github.com/xiph/ogg.git                       v1.3.5
 vorbis    https://github.com/xiph/vorbis.git                    v1.3.7
+# Tarball, not a git ref: libtheora's tags carry no generated `configure`,
+# and regenerating one would add automake to the host requirements.
+theora    https://downloads.xiph.org/releases/theora/libtheora-1.1.1.tar.bz2   1.1.1
 freetype  https://gitlab.freedesktop.org/freetype/freetype.git   VER-2-13-3
 harfbuzz  https://github.com/harfbuzz/harfbuzz.git              10.4.0
 sdl3      https://github.com/libsdl-org/SDL.git                 release-3.2.24
 openal    https://github.com/kcat/openal-soft.git               1.24.3
+modplug   https://github.com/Konstanty/libmodplug.git           master

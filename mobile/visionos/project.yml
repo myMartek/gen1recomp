@@ -1,0 +1,206 @@
+# XcodeGen spec for the visionOS build.
+#
+# Why generate a project instead of patching love-src/platform/xcode/love.xcodeproj
+# the way mobile/ios/patch_love_src.py does: that script works because it
+# *appends* to known pbxproj sections and injects settings into three
+# configurations whose 24-hex object IDs are hardcoded. Adding a whole new
+# platform target means synthesising a PBXNativeTarget, three
+# XCBuildConfigurations, an XCConfigurationList and four build phases -- several
+# hundred lines of string surgery against a file love2d/love@main can restructure
+# at any time. This file is ~150 declarative lines that survive that.
+#
+# Regenerated on every build by scripts/build_visionos.sh; the .xcodeproj it
+# emits is gitignored.
+#
+# Paths are relative to mobile/visionos/ (where this file lives).
+
+name: gen1recomp-visionos
+
+options:
+  bundleIdPrefix: com.gen1recomp
+  deploymentTarget:
+    visionOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SUPPORTED_PLATFORMS: xros xrsimulator
+    TARGETED_DEVICE_FAMILY: "7"          # 7 = Apple Vision
+    XROS_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+    CLANG_CXX_LIBRARY: "libc++"
+    GCC_C_LANGUAGE_STANDARD: "c11"
+    ENABLE_BITCODE: NO
+    # LÖVE's own headers assume these are reachable unprefixed.
+    HEADER_SEARCH_PATHS:
+      - $(inherited)
+      - $(SRCROOT)/love-src/src
+      - $(SRCROOT)/love-src/src/modules
+      - $(SRCROOT)/love-src/src/libraries
+      - $(SRCROOT)/love-src/src/libraries/enet/libenet/include
+      - $(SRCROOT)/love-src/src/libraries/physfs
+      # Merged headers from deps/*.xcframework, published by build_deps.sh.
+      # Needed explicitly because Xcode only propagates an xcframework's
+      # Headers dir to targets that *link* it, and liblove is a static
+      # library that links nothing.
+      - $(SRCROOT)/deps/include
+      # FreeType is reached as <ft2build.h>; openal-soft as flat <alc.h>/<al.h>
+      # (LOVE_APPLE_USE_FRAMEWORKS is deliberately not defined -- we link our
+      # own openal-soft, not the SDK's OpenAL.framework, which XROS.sdk lacks).
+      - $(SRCROOT)/deps/include/freetype2
+      - $(SRCROOT)/deps/include/AL
+      - $(SRCROOT)/deps/include/libmodplug
+      - $(SRCROOT)/deps/include/harfbuzz
+    GCC_PREPROCESSOR_DEFINITIONS:
+      - $(inherited)
+      # LOVE_IOS is deliberately left to config.h, which derives it from
+      # TARGET_OS_IPHONE (1 on visionOS). See mobile/visionos/README.md for why
+      # love.system.getOS() keeps returning "iOS" here.
+      - LOVE_VISIONOS=1
+      - LOVE_ENABLE_LUAJIT=1
+    # The dependency slices built by deps/build_deps.sh.
+    FRAMEWORK_SEARCH_PATHS:
+      - $(inherited)
+      - $(SRCROOT)/deps
+    # Third-party sources are not ours to keep warning-clean.
+    GCC_WARN_INHIBIT_ALL_WARNINGS: YES
+    CLANG_WARN_DOCUMENTATION_COMMENTS: NO
+
+targets:
+  # ---------------------------------------------------------------- liblove
+  liblove:
+    type: library.static
+    platform: visionOS
+    sources:
+      - path: love-src/src
+        # Without this every .h lands in a public Headers phase, and LÖVE has
+        # a Graphics.h / Audio.h / Shader.h in several modules -- they all
+        # collide in the one flat include/liblove dir ("Multiple commands
+        # produce ..."). Nothing outside this project consumes these headers.
+        headerVisibility: project
+        excludes:
+          # love.cpp is the executable entry point, not library code; the app
+          # target compiles it (and on the immersive path replaces its main()).
+          - "love.cpp"
+          # No OpenGL and no Vulkan on visionOS. Every GLES symbol in XROS.sdk
+          # is annotated API_UNAVAILABLE(visionos), and there is no Vulkan
+          # loader at all, so these are excluded rather than left to fail at
+          # link time with a much less obvious error.
+          - "modules/graphics/opengl/**"
+          - "modules/graphics/vulkan/**"
+          - "libraries/glad/**"
+          - "libraries/volk/**"
+          - "libraries/vulkanheaders/**"
+          - "libraries/vk_video/**"
+          - "libraries/vma/**"
+          # luasocket picks its socket backend in its makefile rather than
+          # with #ifdefs, so the Windows one has to be excluded by hand;
+          # usocket.c is the POSIX sibling we keep.
+          - "libraries/luasocket/libluasocket/wsocket.c"
+          # glslang carries one OSDependent implementation per platform and
+          # expects the build system to pick; Unix is ours.
+          - "libraries/glslang/glslang/OSDependent/Windows/**"
+          - "libraries/glslang/glslang/OSDependent/Web/**"
+          # Platform sources for other Apple targets / Android.
+          - "common/macos.mm"
+          - "common/android.cpp"
+    dependencies:
+      - framework: deps/luajit.xcframework
+      - framework: deps/sdl3.xcframework
+      - framework: deps/freetype.xcframework
+      - framework: deps/harfbuzz.xcframework
+      - framework: deps/ogg.xcframework
+      - framework: deps/vorbis.xcframework
+      - framework: deps/theora.xcframework
+      - framework: deps/modplug.xcframework
+      - framework: deps/openal.xcframework
+    settings:
+      base:
+        OTHER_CFLAGS:
+          - $(inherited)
+          # FreeType's public headers are reached as <ft2build.h> and
+          # <freetype/...>; the xcframework puts them at the slice root.
+          - -Wno-nullability-completeness
+
+  # ---------------------------------------------------------------- app
+  gen1recomp:
+    type: application
+    platform: visionOS
+    sources:
+      - path: love-src/src/love.cpp
+        group: love
+      - path: native
+      - path: resources/game.love
+        buildPhase: resources
+        type: file
+        optional: true
+    dependencies:
+      - target: liblove
+      - framework: deps/luajit.xcframework
+      - framework: deps/sdl3.xcframework
+      - framework: deps/freetype.xcframework
+      - framework: deps/harfbuzz.xcframework
+      - framework: deps/ogg.xcframework
+      - framework: deps/vorbis.xcframework
+      - framework: deps/theora.xcframework
+      - framework: deps/modplug.xcframework
+      # openal-soft is LGPL-2.1 and therefore dynamic + embedded rather than
+      # statically linked; see deps/build_deps.sh.
+      - framework: deps/openal.xcframework
+        embed: true
+        codeSign: true
+      - sdk: CompositorServices.framework
+      - sdk: ARKit.framework
+      - sdk: GameController.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreHaptics.framework
+      - sdk: UniformTypeIdentifiers.framework
+      # SDL3's UIKit backend and LÖVE's Apple bits pull these in. They are
+      # listed explicitly rather than discovered, because a missing one shows
+      # up only as an undefined symbol at link time.
+      - sdk: UIKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreVideo.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreMotion.framework
+      - sdk: CoreText.framework
+      - sdk: ImageIO.framework
+      - sdk: Foundation.framework
+      # System zlib, used by physfs's zip archiver and love.data.
+      - sdk: libz.tbd
+    settings:
+      base:
+        PRODUCT_NAME: gen1recomp
+        # Point at the checked-in overlays as plain build settings rather than
+        # using XcodeGen's `info:` / `entitlements:` blocks. Those blocks
+        # GENERATE the file at the given path -- aiming them at a hand-written
+        # plist silently overwrites it, and the app then ships without its
+        # scene manifest or usage descriptions and refuses to launch.
+        INFOPLIST_FILE: $(SRCROOT)/overlays/love-visionos.plist
+        CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/overlays/gen1recomp-visionos.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.gen1recomp.xr
+        MARKETING_VERSION: "0.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/Frameworks"
+        # SwiftUI + ObjC++ in one target: the bridging header is what lets the
+        # Swift immersive shell call into the C ABI that src/modules/xr exposes.
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/native/gen1recomp-Bridging-Header.h
+        CLANG_ENABLE_MODULES: YES
+
+schemes:
+  gen1recomp:
+    build:
+      targets:
+        gen1recomp: all
+    run:
+      config: Debug
+    archive:
+      config: Release

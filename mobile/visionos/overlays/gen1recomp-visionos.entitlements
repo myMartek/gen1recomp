@@ -12,10 +12,12 @@
 	The file still exists so CODE_SIGN_ENTITLEMENTS has a stable target and
 	adding a real entitlement later is a one-line change rather than a
 	project-settings change.
+
+	Do not add com.apple.developer.arkit.main-camera-access.allow "just in
+	case": it is a restricted entitlement, and signing fails outright with
+	"not found and could not be included in profile" unless the App ID has
+	actually been granted it.
 -->
 <plist version="1.0">
-<dict>
-	<key>com.apple.developer.arkit.main-camera-access.allow</key>
-	<false/>
-</dict>
+<dict/>
 </plist>

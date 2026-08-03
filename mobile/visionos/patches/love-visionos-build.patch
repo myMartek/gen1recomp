@@ -1,0 +1,91 @@
+Make LÖVE build for visionOS.
+
+visionOS defines TARGET_OS_IPHONE, so config.h already takes the LOVE_IOS
+branch and the whole iOS backend compiles -- Metal, the iOS filesystem layout,
+the SDL3 UIKit path. Three things still stop it:
+
+1. src/common/ios.mm uses UIScreen in showGameList. visionOS has no UIScreen,
+   because there is no single "main screen" to take bounds from. showGameList
+   is LÖVE's picker for choosing among several .love files and is unreachable
+   in an app that fuses one game.love into its bundle, so this only has to
+   compile.
+
+2. src/modules/graphics/Graphics.cpp calls opengl::createInstance()
+   unconditionally, while the Vulkan and Metal backends beside it are already
+   guarded by LOVE_GRAPHICS_VULKAN / LOVE_GRAPHICS_METAL. On visionOS every
+   GLES symbol in the SDK is annotated API_UNAVAILABLE(visionos), so there is
+   no OpenGL backend to link and this is an undefined symbol at link time.
+
+3. Hence a matching LOVE_GRAPHICS_OPENGL feature macro in config.h, defined
+   everywhere except visionOS, so the renderer-selection code can be guarded
+   the same way as the other two rather than assuming OpenGL is always there.
+
+(2) and (3) are worth sending upstream on their own: they make "a platform
+without an OpenGL backend" expressible, which is a gap today rather than
+anything visionOS-specific.
+
+diff --git a/src/common/config.h b/src/common/config.h
+index e52e220..c94ca0e 100644
+--- a/src/common/config.h
++++ b/src/common/config.h
+@@ -131,6 +131,15 @@
+ #	define LOVE_GRAPHICS_METAL
+ #endif
+ 
++// OpenGL is available everywhere LOVE runs except visionOS, where every GLES
++// symbol in the SDK is annotated API_UNAVAILABLE(visionos) and Metal is the
++// only backend. It gets a feature macro of its own so the renderer-selection
++// code can be guarded the same way Vulkan and Metal already are, instead of
++// assuming an OpenGL backend is always linked in.
++#if !defined(LOVE_VISIONOS)
++#	define LOVE_GRAPHICS_OPENGL
++#endif
++
+ // Autotools config.h
+ #ifdef HAVE_CONFIG_H
+ #	include <../config.h>
+diff --git a/src/common/ios.mm b/src/common/ios.mm
+index 44253ac..7406acc 100644
+--- a/src/common/ios.mm
++++ b/src/common/ios.mm
+@@ -296,7 +296,15 @@ - (void)applicationBecameActive:(NSNotification *)note
+ 	// Contains the game list view/controller.
+ 	UINavigationController *navcontroller = [[UINavigationController alloc] initWithRootViewController:tablecontroller];
+ 
++	// UIScreen is unavailable on visionOS -- there is no single "main screen"
++	// to take bounds from. A plain -init window is sized by its scene instead.
++	// In practice this whole path is unreachable for an app that fuses exactly
++	// one game.love into its bundle, which is every real visionOS build.
++#ifdef LOVE_VISIONOS
++	UIWindow *window = [[UIWindow alloc] init];
++#else
+ 	UIWindow *window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
++#endif
+ 	window.rootViewController = navcontroller;
+ 
+ 	SDL_EventFilter oldfilter = nullptr;
+diff --git a/src/modules/graphics/Graphics.cpp b/src/modules/graphics/Graphics.cpp
+index 50930f1..0e62945 100644
+--- a/src/modules/graphics/Graphics.cpp
++++ b/src/modules/graphics/Graphics.cpp
+@@ -107,7 +107,9 @@ bool isDebugEnabled()
+ 
+ love::Type Graphics::type("graphics", &Module::type);
+ 
++#ifdef LOVE_GRAPHICS_OPENGL
+ namespace opengl { extern std::tuple<love::graphics::Graphics *, std::string> createInstance(); }
++#endif
+ #ifdef LOVE_GRAPHICS_METAL
+ namespace metal { extern std::tuple<love::graphics::Graphics *, std::string> createInstance(); }
+ #endif
+@@ -182,8 +184,10 @@ Graphics *Graphics::createInstance()
+ 			if (r == RENDERER_VULKAN)
+ 				std::tie(instance, err) = vulkan::createInstance();
+ #endif
++#ifdef LOVE_GRAPHICS_OPENGL
+ 			if (r == RENDERER_OPENGL)
+ 				std::tie(instance, err) = opengl::createInstance();
++#endif
+ #ifdef LOVE_GRAPHICS_METAL
+ 			if (r == RENDERER_METAL)
+ 				std::tie(instance, err) = metal::createInstance();

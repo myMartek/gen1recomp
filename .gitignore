@@ -57,6 +57,7 @@ mobile/visionos/build/
 mobile/visionos/deps/*.xcframework/
 mobile/visionos/deps/src/
 mobile/visionos/deps/build/
+mobile/visionos/deps/include/
 
 # XcodeGen output — regenerated from mobile/visionos/project.yml on every build
 mobile/visionos/*.xcodeproj/
@@ -74,3 +75,4 @@ mobile/visionos/bundle_id.local
 *.gbc
 *.sav
 *.sgm
+mobile/visionos/team.local
