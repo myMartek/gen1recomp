@@ -147,6 +147,10 @@ targets:
       - path: love-src/src/love.cpp
         group: love
       - path: native
+        # The immersive shell owns @main itself, and this target already has
+        # one in love.cpp. Compiling both gives a duplicate _main.
+        excludes:
+          - "immersive/**"
       - path: resources/game.love
         buildPhase: resources
         type: file

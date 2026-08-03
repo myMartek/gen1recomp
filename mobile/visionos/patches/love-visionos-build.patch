@@ -1,28 +1,51 @@
-Make LÖVE build for visionOS.
+Make LÖVE build for visionOS, and let it render without a presentable layer.
 
-visionOS defines TARGET_OS_IPHONE, so config.h already takes the LOVE_IOS
-branch and the whole iOS backend compiles -- Metal, the iOS filesystem layout,
-the SDL3 UIKit path. Three things still stop it:
+Part 1 -- building at all. visionOS defines TARGET_OS_IPHONE, so config.h
+already takes the LOVE_IOS branch and the whole iOS backend compiles, which is
+what we want: Metal, the iOS filesystem layout, the SDL3 UIKit path. Three
+things stop it:
 
-1. src/common/ios.mm uses UIScreen in showGameList. visionOS has no UIScreen,
-   because there is no single "main screen" to take bounds from. showGameList
-   is LÖVE's picker for choosing among several .love files and is unreachable
-   in an app that fuses one game.love into its bundle, so this only has to
-   compile.
+  1. src/common/ios.mm uses UIScreen in showGameList. visionOS has no UIScreen
+     because there is no single "main screen" to take bounds from.
+     showGameList is LÖVE's picker for choosing among several .love files and
+     is unreachable in an app that fuses one game.love into its bundle, so it
+     only has to compile.
 
-2. src/modules/graphics/Graphics.cpp calls opengl::createInstance()
-   unconditionally, while the Vulkan and Metal backends beside it are already
-   guarded by LOVE_GRAPHICS_VULKAN / LOVE_GRAPHICS_METAL. On visionOS every
-   GLES symbol in the SDK is annotated API_UNAVAILABLE(visionos), so there is
-   no OpenGL backend to link and this is an undefined symbol at link time.
+  2. src/modules/graphics/Graphics.cpp calls opengl::createInstance()
+     unconditionally, while the Vulkan and Metal backends beside it are already
+     guarded. Every GLES symbol in XROS.sdk is API_UNAVAILABLE(visionos), so
+     there is no OpenGL backend to link.
 
-3. Hence a matching LOVE_GRAPHICS_OPENGL feature macro in config.h, defined
-   everywhere except visionOS, so the renderer-selection code can be guarded
-   the same way as the other two rather than assuming OpenGL is always there.
+  3. Hence a matching LOVE_GRAPHICS_OPENGL feature macro in config.h, defined
+     everywhere except visionOS, so renderer selection can be guarded the same
+     way as Vulkan and Metal already are.
 
-(2) and (3) are worth sending upstream on their own: they make "a platform
-without an OpenGL backend" expressible, which is a gap today rather than
-anything visionOS-specific.
+(2) and (3) are worth upstreaming on their own: they make "a platform with no
+OpenGL backend" expressible, which is a gap in LÖVE today rather than anything
+visionOS-specific.
+
+Part 2 -- rendering with nowhere to present. A fully immersive visionOS app
+has no CAMetalLayer: frames go to CompositorServices drawables, and the flat
+2D image becomes a texture the app shows in a window or in-world. So
+metal::Graphics::setMode now accepts a null context and stands an ordinary
+offscreen texture in for the drawable. Everything downstream -- render passes,
+MSAA resolve, screenshot readback -- keeps working against that texture
+unchanged; only presentDrawable is skipped, because there is nothing to
+present to.
+
+Whether to do that is a RUNTIME choice, not a compile-time one, and that
+distinction matters: the flat visionOS build still presents through SDL's
+layer exactly as on iOS and must keep working, while the immersive shell asks
+for a headless backbuffer before booting LÖVE. Window.cpp consults
+love_visionos_getHeadless() rather than an #ifdef for exactly that reason.
+
+SDL's window is left alone in both cases rather than suppressed. It is never
+presented in the headless case, but it remains the source of events, and
+leaving it keeps this patch to one condition instead of auditing every Window
+method for a null window handle.
+
+Verified: the flat build still renders its launcher in the simulator after
+these changes.
 
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
@@ -89,3 +112,232 @@ index 50930f1..0e62945 100644
  #ifdef LOVE_GRAPHICS_METAL
  			if (r == RENDERER_METAL)
  				std::tie(instance, err) = metal::createInstance();
+diff --git a/src/modules/graphics/metal/Graphics.h b/src/modules/graphics/metal/Graphics.h
+index c7331ba..d1615e7 100644
+--- a/src/modules/graphics/metal/Graphics.h
++++ b/src/modules/graphics/metal/Graphics.h
+@@ -66,6 +66,11 @@ class Graphics final : public love::graphics::Graphics
+ 
+ 	void backbufferChanged(const BackbufferSettings &settings) override;
+ 	bool setMode(void *context, const BackbufferSettings &settings) override;
++
++	// The offscreen backbuffer used when setMode was given a null context
++	// (visionOS). Null otherwise. Returned as void* so this header stays
++	// includable from plain C++.
++	void *getVirtualScreenTexture() const;
+ 	void unSetMode() override;
+ 
+ 	void setActive(bool active) override;
+@@ -221,6 +226,13 @@ class Graphics final : public love::graphics::Graphics
+ 
+ 	CAMetalLayer *metalLayer;
+ 	id<CAMetalDrawable> activeDrawable;
++
++	// visionOS: there is no CAMetalLayer to present to -- the app draws into
++	// CompositorServices drawables instead, and the flat 2D frame becomes a
++	// texture the shell shows in a window (and the mod shows in-world). So
++	// setMode is allowed a null context, and this stands in for the drawable
++	// everywhere the backbuffer is used.
++	id<MTLTexture> virtualScreen;
+ 	MTLRenderPassDescriptor *passDesc;
+ 
+ 	uint32 dirtyRenderState;
+diff --git a/src/modules/graphics/metal/Graphics.mm b/src/modules/graphics/metal/Graphics.mm
+index c8d5b18..de550b9 100644
+--- a/src/modules/graphics/metal/Graphics.mm
++++ b/src/modules/graphics/metal/Graphics.mm
+@@ -276,6 +276,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+ 	, blitEncoder(nil)
+ 	, metalLayer(nil)
+ 	, activeDrawable(nil)
++	, virtualScreen(nil)
+ 	, passDesc(nil)
+ 	, dirtyRenderState(STATEBIT_ALL)
+ 	, lastCullMode(CULL_MAX_ENUM)
+@@ -531,10 +532,68 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+ 	}
+ }
+ 
++// ---------------------------------------------------------------- visionOS
++// The visionOS shell drives LOVE without a presentable layer: frames go to
++// CompositorServices drawables, and the flat 2D image is a texture the app
++// shows in a window or in-world. These three functions are the whole of the
++// C surface that needs, kept here rather than in a new module so the patch
++// stays inside files that already exist.
++#ifdef LOVE_VISIONOS
++static bool g_visionosHeadless = false;
++
++extern "C" void love_visionos_setHeadless(bool headless)
++{
++	g_visionosHeadless = headless;
++}
++
++extern "C" bool love_visionos_getHeadless()
++{
++	return g_visionosHeadless;
++}
++
++// The backbuffer LOVE has been drawing into, as an id<MTLTexture>. Returns
++// null before setMode, and whenever the app is presenting through a layer
++// (the flat build) rather than headless.
++extern "C" void *love_visionos_virtualScreenTexture()
++{
++	auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
++	if (gfx == nullptr)
++		return nullptr;
++	auto metalgfx = dynamic_cast<love::graphics::metal::Graphics *>(gfx);
++	if (metalgfx == nullptr)
++		return nullptr;
++	return metalgfx->getVirtualScreenTexture();
++}
++#endif
++
+ bool Graphics::setMode(void *context, const BackbufferSettings &settings)
+ { @autoreleasepool {
+ 	this->metalLayer = (__bridge CAMetalLayer *) context;
+ 
++	// A null context means there is nothing to present to: visionOS, where the
++	// frame goes to CompositorServices drawables rather than to a layer. Stand
++	// an ordinary offscreen texture in for the drawable so the whole of the
++	// rest of the backend -- render passes, MSAA resolve, screenshots -- keeps
++	// working unchanged.
++	if (metalLayer == nil)
++	{
++		MTLTextureDescriptor *desc = [MTLTextureDescriptor
++			texture2DDescriptorWithPixelFormat:(isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm)
++										 width:std::max(1, settings.pixelWidth)
++										height:std::max(1, settings.pixelHeight)
++									 mipmapped:NO];
++		desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++		desc.storageMode = MTLStorageModePrivate;
++		virtualScreen = [device newTextureWithDescriptor:desc];
++		if (virtualScreen == nil)
++			throw love::Exception("Out of graphics memory (virtual screen).");
++
++		backbufferChanged(settings);
++		created = true;
++		restoreState(states.back());
++		return true;
++	}
++
+ 	metalLayer.device = device;
+ 	metalLayer.pixelFormat = isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
+ 
+@@ -556,6 +615,11 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+ 	return true;
+ }}
+ 
++void *Graphics::getVirtualScreenTexture() const
++{
++	return (__bridge void *) virtualScreen;
++}
++
+ void Graphics::unSetMode()
+ { @autoreleasepool {
+ 	if (!isCreated())
+@@ -570,6 +634,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+ 	created = false;
+ 	metalLayer = nil;
+ 	activeDrawable = nil;
++	virtualScreen = nil;
+ }}
+ 
+ void Graphics::setActive(bool enable)
+@@ -661,7 +726,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+ 		const auto &rts = states.back().renderTargets;
+ 		if (rts.getFirstTarget().texture.get() == nullptr)
+ 		{
+-			if (activeDrawable == nil)
++			if (activeDrawable == nil && metalLayer != nil)
+ 			{
+ 				// This is reset to YES after each frame.
+ 				// TODO: Does setting this reallocate memory?
+@@ -671,16 +736,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+ 				activeDrawable = [metalLayer nextDrawable];
+ 			}
+ 
++			id<MTLTexture> backbuffer = metalLayer != nil ? activeDrawable.texture : virtualScreen;
++
+ 			if (backbufferMSAA.get())
+ 			{
+ 				attachmentStoreActions.color[0] = MTLStoreActionMultisampleResolve;
+ 				passDesc.colorAttachments[0].texture = getMTLRenderTarget(backbufferMSAA);
+-				passDesc.colorAttachments[0].resolveTexture = activeDrawable.texture;
++				passDesc.colorAttachments[0].resolveTexture = backbuffer;
+ 			}
+ 			else
+ 			{
+ 				attachmentStoreActions.color[0] = MTLStoreActionStore;
+-				passDesc.colorAttachments[0].texture = activeDrawable.texture;
++				passDesc.colorAttachments[0].texture = backbuffer;
+ 				passDesc.colorAttachments[0].resolveTexture = nil;
+ 			}
+ 
+@@ -1694,8 +1761,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+ 
+ 	id<MTLBuffer> screenshotbuffer = nil;
+ 
+-	int w = activeDrawable.texture.width;
+-	int h = activeDrawable.texture.height;
++	id<MTLTexture> backbuffer = metalLayer != nil ? activeDrawable.texture : virtualScreen;
++
++	int w = (int) backbuffer.width;
++	int h = (int) backbuffer.height;
+ 
+ 	if (!pendingScreenshotCallbacks.empty())
+ 	{
+@@ -1707,7 +1776,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+ 
+ 		auto blitencoder = useBlitEncoder();
+ 
+-		[blitencoder copyFromTexture:activeDrawable.texture
++		[blitencoder copyFromTexture:backbuffer
+ 						 sourceSlice:0
+ 						 sourceLevel:0
+ 						sourceOrigin:MTLOriginMake(0, 0, 0)
+@@ -1732,6 +1801,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+ 
+ 	if (cmd != nil && activeDrawable != nil)
+ 		[cmd presentDrawable:activeDrawable];
++	// With no layer there is nothing to present to; the frame simply stays in
++	// virtualScreen for the shell (and the mod) to sample.
+ 
+ 	submitCommandBuffer(SUBMIT_DONE);
+ 
+diff --git a/src/modules/window/sdl/Window.cpp b/src/modules/window/sdl/Window.cpp
+index f3b0966..30f6e1f 100644
+--- a/src/modules/window/sdl/Window.cpp
++++ b/src/modules/window/sdl/Window.cpp
+@@ -61,6 +61,11 @@
+ #define APIENTRY
+ #endif
+ 
++#ifdef LOVE_VISIONOS
++// Defined in graphics/metal/Graphics.mm; set by the visionOS shell before boot.
++extern "C" bool love_visionos_getHeadless();
++#endif
++
+ namespace love
+ {
+ namespace window
+@@ -667,6 +672,20 @@ bool Window::setWindow(int width, int height, WindowSettings *settings)
+ 			if (renderer == graphics::RENDERER_METAL && metalView)
+ 				context = (void *) SDL_Metal_GetLayer(metalView);
+ #endif
++#ifdef LOVE_VISIONOS
++			// visionOS can run either way, so this is a RUNTIME choice rather
++			// than a compile-time one: the flat build still presents through
++			// SDL's layer exactly as on iOS, while the immersive shell -- which
++			// owns @main itself and sends frames to CompositorServices drawables
++			// -- asks for a headless backbuffer before booting LOVE.
++			//
++			// SDL's window is left alone in both cases rather than suppressed.
++			// It is never presented in the headless case, but it stays the
++			// source of events, and leaving it keeps this to one condition
++			// instead of auditing every Window method for a null handle.
++			if (love_visionos_getHeadless())
++				context = nullptr;
++#endif
+ 
+ 			try
+ 			{
