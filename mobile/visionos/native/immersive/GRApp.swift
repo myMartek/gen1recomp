@@ -39,6 +39,20 @@ struct GRImmersiveContent: CompositorContent {
                 // run() only returns once the layer is invalidated, which is
                 // the one signal that covers every way out of immersion --
                 // including a Digital Crown press, which never touches our UI.
+                //
+                // Withdraw THIS layer from love.xr: it is dead, and until it
+                // is withdrawn love.xr keeps reporting it as present. Lua then
+                // goes on claiming a frame loop that can never produce a frame
+                // -- while the host stands down for exactly that claim, so the
+                // space stays black -- and holds textures belonging to
+                // drawables that no longer exist.
+                //
+                // Conditional on it still being the current one, because this
+                // runs as the thread winds down and the NEXT space may already
+                // have installed its layer by then. Clearing unconditionally
+                // wipes the new one and nothing ever draws again.
+                love_visionos_clearLayerRenderer(
+                    Unmanaged.passUnretained(layerRenderer as AnyObject).toOpaque())
                 Task { @MainActor in model.immersiveSpaceEnded() }
             }
             thread.name = "gen1recomp.compositor"

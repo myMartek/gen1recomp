@@ -98,6 +98,16 @@ final class GRImmersiveRenderer {
                     usleep(4000)
                 } else {
                     renderFrame()
+                    // TEMPORARY: "every other frame is black" is the shape of
+                    // two frame loops interleaving, and this one clears to
+                    // near-black. If it is still running after the mod claims
+                    // the loop, this says so in numbers -- and the clear
+                    // colour below says so in magenta, which no other part of
+                    // the pipeline produces.
+                    hostFrames += 1
+                    if hostFrames % 120 == 0 {
+                        print("host rendered \(hostFrames) frames (claimed=false)")
+                    }
                 }
             case .invalidated:
                 return
@@ -108,6 +118,7 @@ final class GRImmersiveRenderer {
     }
 
     private var loggedGeometry = false
+    private var hostFrames = 0
 
     /// States, once, whether this is actually stereo -- and how much.
     ///
@@ -246,7 +257,11 @@ final class GRImmersiveRenderer {
             pass.colorAttachments[0].storeAction = .store
             // Near-black rather than magenta now that there is real content:
             // this is the room around the panel, and it should not glow.
-            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.02, green: 0.02, blue: 0.04, alpha: 1.0)
+            // TEMPORARY: magenta, not near-black. Nothing else in this pipeline
+            // produces it, so a magenta flash is proof that THIS renderer
+            // drew the frame -- which is the question behind "every other
+            // frame is black". Back to near-black once that is settled.
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 1.0, green: 0.0, blue: 1.0, alpha: 1.0)
 
             // The depth attachment is NOT optional. A drawable carries one per
             // view and the compositor reprojects against it; submitting a frame

@@ -774,10 +774,10 @@ index 0000000..05bf9ce
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..40e5417
+index 0000000..d425c36
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,461 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -856,9 +856,58 @@ index 0000000..40e5417
 +
 +// ---------------------------------------------------------------- C entry
 +// Called by the host once SwiftUI hands over the layer renderer.
++extern "C" void love_visionos_setLayerRenderer(void *layerRenderer);
++
++// Withdraw a layer that has gone away, but ONLY if it is still the current
++// one.
++//
++// The renderer thread withdraws its layer after its run loop returns, and the
++// run loop returns when the layer is invalidated. Nothing orders that against
++// the NEXT immersive space installing its own layer -- SwiftUI can and does
++// build the new one while the old thread is still winding down. An
++// unconditional clear then wipes the layer that just arrived, and every
++// subsequent claim finds nothing: the space stays black, which is exactly what
++// re-entry did even after the stale-layer bugs below were fixed.
++extern "C" void love_visionos_clearLayerRenderer(void *layerRenderer)
++{
++	if ((__bridge cp_layer_renderer_t) layerRenderer != g_layer)
++		return;
++	love_visionos_setLayerRenderer(nullptr);
++}
++
 +extern "C" void love_visionos_setLayerRenderer(void *layerRenderer)
 +{
-+	g_layer = (__bridge cp_layer_renderer_t) layerRenderer;
++	cp_layer_renderer_t incoming = (__bridge cp_layer_renderer_t) layerRenderer;
++	if (incoming == g_layer)
++		return;
++
++	// A DIFFERENT layer (including none) means the immersive space closed and,
++	// perhaps, opened again -- which the player does with the Digital Crown
++	// several times a session. Everything below belongs to the layer that just
++	// went away, and none of it survives the change.
++	//
++	// The claim above all. Leaving it set meant Lua still owned a frame loop
++	// on a dead layer while the host stood down for it, so nothing drew at
++	// all: an entirely black space. And because g_layer was merely stale
++	// rather than null, claim() went on succeeding -- the mod shut down on a
++	// failed poll, started again, claimed the corpse, and repeated. That is
++	// the run of "session created" lines in the log.
++	//
++	// The texture cache has a nastier failure. It is keyed by the raw
++	// MTLTexture pointer, and Metal reuses addresses: a new drawable can land
++	// on the address of a freed one and be handed the love Texture wrapping
++	// the dead original.
++	for (auto &entry : g_eyeTextures)
++	{
++		if (entry.second != nullptr)
++			entry.second->release();
++	}
++	g_eyeTextures.clear();
++
++	g_frame = nullptr;
++	g_drawable = nullptr;
++	g_claimed = false;
++	g_layer = incoming;
 +}
 +
 +extern "C" bool love_visionos_xrClaimed()
@@ -930,7 +979,13 @@ index 0000000..40e5417
 + */
 +static int w_claim(lua_State *L)
 +{
-+	if (g_layer == nullptr)
++	// Not merely "a layer exists" but "a layer that can still present". A
++	// closed immersive space leaves an invalidated one behind, and claiming
++	// that hands Lua a frame loop that can never produce a frame while the
++	// host stands down for it -- a black space that only a settings toggle
++	// got out of.
++	if (g_layer == nullptr
++		|| cp_layer_renderer_get_state(g_layer) == cp_layer_renderer_state_invalidated)
 +	{
 +		luax_pushboolean(L, false);
 +		return 1;

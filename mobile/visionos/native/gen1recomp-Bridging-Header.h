@@ -42,6 +42,12 @@ void *love_visionos_commandQueue(void);
 /// host keeps drawing; see love_visionos_xrClaimed.
 void love_visionos_setLayerRenderer(void *layerRenderer);
 
+/// Withdraws a layer that has been invalidated, but only if it is still the
+/// current one. The renderer thread withdraws its layer as it winds down,
+/// and nothing orders that against the next immersive space installing its
+/// own -- an unconditional clear wipes the layer that just arrived.
+void love_visionos_clearLayerRenderer(void *layerRenderer);
+
 /// True while Lua owns the frame loop. The host's renderer must stand down:
 /// two loops calling cp_frame_* on one layer is a race.
 bool love_visionos_xrClaimed(void);
