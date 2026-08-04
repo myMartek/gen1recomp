@@ -593,20 +593,23 @@ index 18d3660..3867844 100644
  	: love::graphics::Texture(gfx, base, viewsettings)
  {
 diff --git a/src/modules/love/love.cpp b/src/modules/love/love.cpp
-index fa62f4f..a660f5e 100644
+index fa62f4f..b5906e9 100644
 --- a/src/modules/love/love.cpp
 +++ b/src/modules/love/love.cpp
-@@ -155,6 +155,9 @@ extern "C"
- #endif
+@@ -156,6 +156,12 @@ extern "C"
  #if defined(LOVE_ENABLE_TIMER)
  	extern int luaopen_love_timer(lua_State*);
+ #endif
++// Not nested inside another module's guard: love.xr has nothing to do with
++// the timer, and sitting inside LOVE_ENABLE_TIMER meant it would silently
++// vanish if that module were ever turned off.
 +#ifdef LOVE_VISIONOS
 +	extern int luaopen_love_xr(lua_State*);
 +#endif
- #endif
  #if defined(LOVE_ENABLE_THREAD)
  	extern int luaopen_love_thread(lua_State*);
-@@ -231,6 +234,11 @@ static const luaL_Reg modules[] = {
+ #endif
+@@ -231,6 +237,11 @@ static const luaL_Reg modules[] = {
  #if defined(LOVE_ENABLE_TIMER)
  	{ "love.timer", luaopen_love_timer },
  #endif
@@ -617,6 +620,32 @@ index fa62f4f..a660f5e 100644
 +#endif
  #if defined(LOVE_ENABLE_TOUCH)
  	{ "love.touch", luaopen_love_touch },
+ #endif
+@@ -556,6 +567,25 @@ int luaopen_love(lua_State *L)
+ 	lua_pushstring(L, love::VERSION_CODENAME);
+ 	lua_setfield(L, -2, "_version_codename");
+ 
++#ifdef LOVE_VISIONOS
++	// love.xr is opened HERE rather than left in package.preload.
++	//
++	// The preload entry above only makes require("love.xr") resolvable. What
++	// actually populates love.<name> is boot.lua, which walks LOVE's own fixed
++	// list of modules and requires each one -- and xr is not on that list,
++	// because it is not one of LOVE's modules. So love.xr stayed nil, the mod
++	// found no backend, VR.supported() was false, and the VR row was never
++	// offered. Registering a module and never loading it looks identical, from
++	// Lua, to not having written it at all.
++	//
++	// Opening it directly keeps boot.lua untouched (it is shared with every
++	// other platform) and makes love.xr present from the first line of Lua
++	// that runs, which is what the mod needs: it decides whether to offer its
++	// VR row while it loads.
++	luaopen_love_xr(L);
++	lua_setfield(L, -2, "xr");
++#endif
++
+ #ifdef LOVE_ANDROID
+ 	lua_register(L, "print", w_print_sdl_log);
  #endif
 diff --git a/src/modules/window/sdl/Window.cpp b/src/modules/window/sdl/Window.cpp
 index f3b0966..071f5b2 100644
