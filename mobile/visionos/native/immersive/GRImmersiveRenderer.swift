@@ -107,6 +107,43 @@ final class GRImmersiveRenderer {
         }
     }
 
+    private var loggedGeometry = false
+
+    /// States, once, whether this is actually stereo -- and how much.
+    ///
+    /// "Is it really stereo?" is not a question to answer by looking, because
+    /// the panel is a flat quad and flat things look flat in correct stereo
+    /// too. It is a question about numbers: two views, two eye transforms, and
+    /// a separation between them of roughly an interpupillary distance. If the
+    /// separation were zero the two eyes would be receiving the same picture
+    /// no matter how the rest of the pipeline behaved.
+    private func logGeometryOnce(drawable: LayerRenderer.Drawable,
+                                 originFromDevice: simd_float4x4,
+                                 viewCount: Int,
+                                 layered: Bool) {
+        guard !loggedGeometry, viewCount > 0 else { return }
+        loggedGeometry = true
+
+        var separation: Float = -1
+        if viewCount >= 2 {
+            let a = (originFromDevice * drawable.views[0].transform).columns.3
+            let b = (originFromDevice * drawable.views[1].transform).columns.3
+            separation = simd_length(SIMD3<Float>(a.x - b.x, a.y - b.y, a.z - b.z))
+        }
+
+        let line = "stereo geometry: views=\(viewCount)"
+            + " colorTextures=\(drawable.colorTextures.count)"
+            + " layout=\(layered ? "layered" : "dedicated")"
+            + " eyeSeparation=" + String(format: "%.4f m", separation)
+
+        GRLove.log.notice("\(line, privacy: .public)")
+        // Also to stdout: `devicectl device process launch --console` bridges
+        // that to the terminal, and this Mac's `log` has no way to stream from
+        // the device at all -- so the os.Logger line above is, in practice,
+        // write-only.
+        print(line)
+    }
+
     private func pipeline(for format: MTLPixelFormat, depth: MTLPixelFormat) -> MTLRenderPipelineState? {
         if let p = panelPipeline, pipelineFormat == format, depthFormat == depth { return p }
         guard let library = device.makeDefaultLibrary(),
@@ -182,11 +219,29 @@ final class GRImmersiveRenderer {
         let screen = GRLove.virtualScreen
         let originFromDevice = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
 
-        for index in 0..<drawable.colorTextures.count {
-            let target = drawable.colorTextures[index]
+        // One view per EYE, not one per texture.
+        //
+        // These are the same number only under the `dedicated` layout, which
+        // gives a plain 2D texture per eye. Under `layered` there is a single
+        // texture with one array slice per eye, so iterating the textures runs
+        // the loop once, writes slice 0, and leaves the right eye untouched --
+        // both eyes then show the same picture, which is mono wearing a stereo
+        // costume and looks exactly like "it feels flat". GRApp asks for
+        // dedicated and falls back to layered, so this has to hold for both.
+        let viewCount = drawable.views.count
+        let layered = drawable.colorTextures.count < viewCount
+
+        logGeometryOnce(drawable: drawable, originFromDevice: originFromDevice,
+                        viewCount: viewCount, layered: layered)
+
+        for index in 0..<viewCount {
+            let target = drawable.colorTextures[layered ? 0 : index]
 
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = target
+            // Selects this eye's slice of the array texture; 0 and ignored
+            // when each eye has a texture of its own.
+            pass.colorAttachments[0].slice = layered ? index : 0
             pass.colorAttachments[0].loadAction = .clear
             pass.colorAttachments[0].storeAction = .store
             // Near-black rather than magenta now that there is real content:
@@ -199,9 +254,10 @@ final class GRImmersiveRenderer {
             // the process inside cp_frame_end_submission. (The simulator does
             // not reproject, which is why it tolerated this.)
             var depthTexture: MTLTexture? = nil
-            if index < drawable.depthTextures.count {
-                depthTexture = drawable.depthTextures[index]
+            if !drawable.depthTextures.isEmpty {
+                depthTexture = drawable.depthTextures[layered ? 0 : index]
                 pass.depthAttachment.texture = depthTexture
+                pass.depthAttachment.slice = layered ? index : 0
                 pass.depthAttachment.loadAction = .clear
                 pass.depthAttachment.storeAction = .store
                 // 0 is the far plane under reverse-Z.

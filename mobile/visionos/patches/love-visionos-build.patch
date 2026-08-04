@@ -745,10 +745,10 @@ index 0000000..05bf9ce
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..966a894
+index 0000000..40e5417
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,384 @@
+@@ -0,0 +1,406 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -839,9 +839,30 @@ index 0000000..966a894
 +
 +// ---------------------------------------------------------------- Lua API
 +
++// Whether a compositor layer is attached RIGHT NOW -- that is, whether a
++// frame can be driven this instant. False in the launcher window, true inside
++// the immersive space.
 +static int w_available(lua_State *L)
 +{
 +	luax_pushboolean(L, g_layer != nullptr);
++	return 1;
++}
++
++// Whether this BUILD can do VR at all. A different question from `available`,
++// and conflating the two cost a whole evening.
++//
++// The mod decides whether to OFFER its VR row when it loads, which is at app
++// start, in the launcher window, before any immersive space exists -- so
++// `available` was false and the row was never added to the settings schema.
++// Entering the space later cannot add it: the schema is built once. The row
++// the player was told to switch on did not exist.
++//
++// This module is only ever registered in a visionOS build, so its presence is
++// the whole answer. Session-liveness questions belong to `available` and
++// `state`, and starting a session when none can start already fails cleanly.
++static int w_supported(lua_State *L)
++{
++	luax_pushboolean(L, true);
 +	return 1;
 +}
 +
@@ -1112,6 +1133,7 @@ index 0000000..966a894
 +static const luaL_Reg functions[] =
 +{
 +	{ "available",   w_available   },
++	{ "supported",   w_supported   },
 +	{ "claim",       w_claim       },
 +	{ "release",     w_release     },
 +	{ "state",       w_state       },
