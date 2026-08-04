@@ -356,10 +356,25 @@ run_xcodebuild() {
   say "xcodebuild ($CONFIG / $SDK)"
   local log="$BUILD_DIR/xcodebuild.log"
   mkdir -p "$BUILD_DIR"
+  # A failed compile MUST stop here.  This used to end in `|| true`, and the
+  # find below then picked up the app from the last SUCCESSFUL build: the
+  # script printed "done", verify_app passed on the stale bundle, and a stale
+  # binary was installed and tested.  A build that silently ships the previous
+  # one is worse than no build at all -- it costs a debugging session before
+  # anyone suspects the toolchain.
+  local status=0
   if command -v xcbeautify >/dev/null 2>&1; then
-    xcodebuild "${args[@]}" 2>&1 | tee "$log" | xcbeautify --quiet || true
+    set +e
+    xcodebuild "${args[@]}" 2>&1 | tee "$log" | xcbeautify --quiet
+    status=${PIPESTATUS[0]}
+    set +e
   else
-    xcodebuild "${args[@]}" > "$log" 2>&1 || true
+    xcodebuild "${args[@]}" > "$log" 2>&1 || status=$?
+  fi
+  if [ "$status" -ne 0 ]; then
+    printf '\n'
+    grep -E '(error|warning): ' "$log" | sed -n '1,25p' >&2
+    fail "xcodebuild failed (status $status). Full log: $log"
   fi
   APP="$(find "$BUILD_DIR/Products/$CONFIG-$SDK" -maxdepth 1 -name "$APP_NAME" 2>/dev/null | sed -n '1p')"
   [ -n "$APP" ] || {

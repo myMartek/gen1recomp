@@ -10,6 +10,9 @@
 
 local editorMode = os.getenv("POKEPORT_EDITOR") == "1" or POKEPORT_EDITOR_MODE == true
 
+-- The visionOS launcher lives in a SwiftUI window; this stands in for the
+-- Lua one there and is inert everywhere else (NativeShell.applies()).
+local NativeShell = require("src.core.NativeShell")
 local Game, EditorApp, Importer, TouchEditor
 
 local autopilot -- optional scripted-input dev tool (tests/autopilot.lua)
@@ -256,6 +259,16 @@ function love.load(args)
     return
   end
 
+  -- visionOS draws its launcher in a real window, so the Lua one never runs
+  -- there.  The player is in a headset: a 160x144 arcade panel floating on a
+  -- quad is a worse way to pick a game than a window the system can place,
+  -- focus and read aloud.  src/core/NativeShell.lua publishes what the shell
+  -- needs and boots what it picks -- it does not reimplement any of it.
+  if NativeShell.applies() then
+    NativeShell.begin(bootGame)
+    return
+  end
+
   -- Interactive: the launcher always runs.  Red, Blue, and Yellow are each
   -- live: a column shows Play when that game's ROM is already imported, or
   -- Choose ROM / drag-drop when it is not.  Any dropped .gb is routed by its
@@ -276,6 +289,9 @@ function love.update(dt)
   if editorMode then return EditorApp.update(dt) end
   if TouchEditor then return TouchEditor.update(dt) end
   if Importer then return Importer:update(dt) end
+  -- Only while the native launcher is up: it clears its own flag the moment
+  -- it boots a game, and from then on this is one dead branch per frame.
+  if NativeShell.active then return NativeShell.update(dt) end
 
   -- Scripted runs (autopilot / POKEPORT_DRIVER) observe and act exactly
   -- once per Game:update, so they must keep a 1:1 relationship with the
@@ -316,6 +332,11 @@ function love.draw()
   if editorMode then return EditorApp.draw() end
   if TouchEditor then return TouchEditor.draw() end
   if Importer then return Importer:draw() end
+  -- The native launcher draws nothing: the window IS the launcher, and there
+  -- is no Game yet.  Without this the frame reaches Game:draw with a nil
+  -- Game, LOVE catches the error and stops the loop -- so love.update never
+  -- runs again either, and the launcher looks alive while answering nothing.
+  if NativeShell.active then return NativeShell.draw() end
 
   Game:draw()
   -- frame capture requested by a driver

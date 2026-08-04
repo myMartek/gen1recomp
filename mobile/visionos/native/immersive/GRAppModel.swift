@@ -75,6 +75,17 @@ final class GRAppModel {
     /// re-rendering the launcher view cannot trigger it again.
     var didRestoreOnLaunch = false
 
+    /// The game version the native launcher has booted, or nil while it is
+    /// still showing.
+    ///
+    /// On visionOS the Lua launcher never runs -- src/core/NativeShell.lua
+    /// stands in for it -- so this window IS the launcher until a game is
+    /// picked, and the game view afterwards. The distinction lives here rather
+    /// than in the view because the window is dismissed on entering immersion
+    /// and rebuilt when it comes back, and a launcher that reappeared over a
+    /// running game would be worse than no window at all.
+    var bootedVersion: String?
+
     // MARK: - Window control
 
     static let launcherWindowID = "launcher"
