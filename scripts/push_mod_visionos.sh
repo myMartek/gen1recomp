@@ -29,7 +29,30 @@ export PATH="$DEVELOPER_DIR/usr/bin:$PATH"
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-BUNDLE_ID="${GEN1_VISIONOS_BUNDLE_ID:-com.gen1recomp.xr}"
+# The bundle id of the app to push INTO, resolved the same way
+# scripts/build_visionos.sh resolves the one it builds: environment first, then
+# mobile/visionos/bundle_id.local, then the immersive target in project.yml.
+#
+# It used to be hardcoded to com.gen1recomp.xr, which is the FLAT target's id --
+# the immersive one is de.martek.pocketsim. devicectl reports a missing
+# container as "ContainerLookupErrorDomain error -1" wrapped in "the specified
+# file could not be transferred", which reads like a transfer problem and sent
+# an hour into the source, the destination path, the staging directory and the
+# running app before the id itself. Deriving it from project.yml means it
+# cannot drift again.
+BUNDLE_ID="${GEN1_VISIONOS_BUNDLE_ID:-}"
+if [ -z "$BUNDLE_ID" ] && [ -f "$ROOT/mobile/visionos/bundle_id.local" ]; then
+  BUNDLE_ID="$(tr -d '[:space:]' < "$ROOT/mobile/visionos/bundle_id.local")"
+fi
+if [ -z "$BUNDLE_ID" ]; then
+  BUNDLE_ID="$(awk '
+    /^  gen1recomp-immersive:/ { inTarget = 1; next }
+    /^  [a-zA-Z]/             { inTarget = 0 }
+    inTarget && /PRODUCT_BUNDLE_IDENTIFIER:/ {
+      sub(/.*PRODUCT_BUNDLE_IDENTIFIER:[ \t]*/, ""); print; exit
+    }' "$ROOT/mobile/visionos/project.yml")"
+fi
+[ -n "$BUNDLE_ID" ] || fail "could not work out the bundle id (set GEN1_VISIONOS_BUNDLE_ID)"
 # Must match conf.lua's t.identity. LÖVE appends it to Application Support --
 # NOT to Documents: on Apple platforms COMMONPATH_APP_SAVEDIR resolves from
 # COMMONPATH_USER_APPDATA. Getting this wrong puts files where the engine
