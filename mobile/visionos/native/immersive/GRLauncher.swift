@@ -107,8 +107,13 @@ struct GRLauncherView: View {
                 } else if let game = selected {
                     versionRow(game)
                     savesSection(game)
-                    if !shell.mods.isEmpty { modList }
+                    // Above the lists, not below them. Mods and settings grow
+                    // without bound -- the settings alone are nine rows -- and
+                    // the one thing the player came here to press must not be
+                    // the one thing they have to scroll to find.
                     startRow(game)
+                    if !shell.mods.isEmpty { modList }
+                    if !shell.settings.isEmpty { settingsList }
                 }
 
                 if !romMessage.isEmpty {
@@ -240,6 +245,41 @@ struct GRLauncherView: View {
                 .padding(.vertical, 10)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
+        }
+    }
+
+    /// The OPTIONS rows that mean anything before a game is running.
+    ///
+    /// Each is a menu, not a cycler: the Lua menu steps through values with
+    /// Left/Right because a d-pad is all it has, and reproducing that here
+    /// would mean tapping a row six times to reach the seventh value.
+    private var settingsList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Settings").font(.title2.weight(.medium))
+
+            ForEach(shell.settings) { setting in
+                HStack {
+                    Text(setting.label)
+                    Spacer()
+                    Picker(setting.label, selection: Binding(
+                        get: { setting.currentLabel },
+                        set: { label in
+                            guard let c = setting.choices.first(where: { $0.label == label })
+                            else { return }
+                            shell.setOption(setting.id, value: c.value)
+                        }
+                    )) {
+                        ForEach(setting.choices) { choice in
+                            Text(choice.label).tag(choice.label)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         }
     }
 

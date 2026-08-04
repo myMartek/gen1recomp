@@ -71,9 +71,56 @@ struct GRMod: Identifiable, Equatable, Decodable {
     let experimental: Bool?
 }
 
+/// One OPTIONS row, as the game describes it.
+///
+/// The value is deliberately untyped here: a setting is a number, a boolean or
+/// a string depending on the row, and the game already knows which. Rendering
+/// only needs the label to show and the value to send back, so this stores
+/// both as opaque JSON and never has to agree with Lua about types.
+struct GRSetting: Identifiable, Equatable, Decodable {
+    let id: String
+    let label: String
+    let value: GRJSONValue
+    let choices: [Choice]
+
+    struct Choice: Equatable, Decodable, Identifiable {
+        let value: GRJSONValue
+        let label: String
+        var id: String { label }
+    }
+
+    var currentLabel: String {
+        choices.first { $0.value == value }?.label ?? "—"
+    }
+}
+
+/// Just enough JSON to carry a settings value through unexamined.
+enum GRJSONValue: Equatable, Decodable {
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        // Bool before number: JSONDecoder will happily read `true` as 1.
+        if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let d = try? c.decode(Double.self) { self = .number(d) }
+        else { self = .string(try c.decode(String.self)) }
+    }
+
+    var json: Any {
+        switch self {
+        case .bool(let b):   return b
+        case .number(let d): return d == d.rounded() ? Int(d) : d
+        case .string(let s): return s
+        }
+    }
+}
+
 private struct GRShellState: Decodable {
     let games: [GRGame]
     let mods: [GRMod]
+    let settings: [GRSetting]?
 }
 
 @MainActor
@@ -82,6 +129,7 @@ final class GRShell {
 
     private(set) var games: [GRGame] = []
     private(set) var mods: [GRMod] = []
+    private(set) var settings: [GRSetting] = []
     /// False until the first snapshot lands, which is what tells the view to
     /// say "starting…" rather than "no games found".
     private(set) var hasState = false
@@ -129,6 +177,8 @@ final class GRShell {
         // nothing.
         if decoded.games != games { games = decoded.games }
         if decoded.mods != mods { mods = decoded.mods }
+        let incoming = decoded.settings ?? []
+        if incoming != settings { settings = incoming }
         if !hasState { hasState = true }
     }
 
@@ -156,6 +206,17 @@ final class GRShell {
                             experimental: m.experimental)
         }
         send(["action": "setMod", "id": id, "enabled": enabled])
+    }
+
+    func setOption(_ id: String, value: GRJSONValue) {
+        // Optimistic, like setMod: the round trip is two polls, and a picker
+        // that snapped back for a fifth of a second would read as broken.
+        if let i = settings.firstIndex(where: { $0.id == id }) {
+            let s = settings[i]
+            settings[i] = GRSetting(id: s.id, label: s.label, value: value,
+                                    choices: s.choices)
+        }
+        send(["action": "setOption", "id": id, "value": value.json])
     }
 
     /// Which save the chosen game continues from.

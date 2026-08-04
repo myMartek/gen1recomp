@@ -53,6 +53,113 @@ local bootGame = nil
 local timer = 0
 local lastPublished = nil
 
+-- ---------------------------------------------------------------- settings
+--
+-- The subset of OPTIONS that means anything before a game exists.
+--
+-- src/ui/OptionsMenu.lua's rows are descriptors over a loaded `game`
+-- (g.save.options), so they cannot be driven from here. What CAN be is the
+-- arithmetic behind them: Performance.cycle, FrameCap.cycle, GameSpeed.cycle
+-- and PaletteFX's mode list are pure functions of the value, and every one of
+-- these settings lives in the global options file that SaveData.loadOptions
+-- already reads.
+--
+-- So the choice lists are DERIVED, not copied: cycle() is walked until it
+-- returns to where it started, which means adding a performance tier or an
+-- fps step upstream shows up here with no change. Only the two ladders whose
+-- tables are local to OptionsMenu (text speed, and the 0-7 volumes) are
+-- written out, and those are three and eight values that have not moved since
+-- the ROM.
+--
+-- Battle-shape rows (BATTLE LAYOUT/SIZE/BG, UI LAYOUT, VOID FILL) and the
+-- video rows are deliberately absent: they are about a flat window, and this
+-- build has none.
+local SETTINGS
+
+local function cycleChoices(cycle, labelFor, start)
+  local seen, out = {}, {}
+  local v = start
+  -- Bounded: a cycle that never returns to its start is a bug upstream, and
+  -- this should degrade to a short list rather than hang the launcher.
+  for _ = 1, 32 do
+    local key = tostring(v)
+    if seen[key] then break end
+    seen[key] = true
+    out[#out + 1] = { value = v, label = tostring(labelFor(v)) }
+    local ok, nextV = pcall(cycle, v, 1)
+    if not ok then break end
+    v = nextV
+  end
+  -- A cycle's order is wherever the walk started -- fpsCap came out as
+  -- 60, 75, ... 160, 30, 40, 50, which is right for Left/Right stepping and
+  -- wrong for a menu someone reads top to bottom. Purely numeric ladders sort;
+  -- named ones (AUTO/HIGH/BALANCED/LOW) keep the engine's order, which is
+  -- meaningful.
+  local allNumbers = #out > 0
+  for _, c in ipairs(out) do
+    if type(c.value) ~= "number" then allNumbers = false break end
+  end
+  if allNumbers then
+    table.sort(out, function(a, b) return a.value < b.value end)
+  end
+  return out
+end
+
+local function buildSettings()
+  if SETTINGS then return SETTINGS end
+  local ok, built = pcall(function()
+    local Performance = require("src.core.Performance")
+    local FrameCap = require("src.core.FrameCap")
+    local GameSpeed = require("src.core.GameSpeed")
+    local PaletteFX = require("src.render.PaletteFX")
+
+    local vols = {}
+    for i = 0, 7 do vols[#vols + 1] = { value = i, label = tostring(i) } end
+
+    local colors = {}
+    for _, m in ipairs(PaletteFX.MODES) do
+      colors[#colors + 1] = { value = m, label = tostring(PaletteFX.modeLabel(m)) }
+    end
+
+    return {
+      { id = "textSpeed", label = "Text speed", default = 3, choices = {
+          { value = 1, label = "Fast" },
+          { value = 3, label = "Medium" },
+          { value = 5, label = "Slow" } } },
+      { id = "animations", label = "Battle animation", default = true, choices = {
+          { value = true, label = "On" }, { value = false, label = "Off" } } },
+      { id = "battleStyle", label = "Battle style", default = "shift", choices = {
+          { value = "shift", label = "Shift" }, { value = "set", label = "Set" } } },
+      { id = "colors", label = "Colors", default = "gbc", choices = colors },
+      { id = "musicVol", label = "Music volume", default = 7, choices = vols },
+      { id = "sfxVol", label = "Sound volume", default = 7, choices = vols },
+      { id = "performance", label = "Performance", default = "auto",
+        choices = cycleChoices(Performance.cycle, Performance.label, "auto") },
+      { id = "fpsCap", label = "Max FPS", default = 60,
+        choices = cycleChoices(FrameCap.cycle, FrameCap.label, 60) },
+      { id = "speed", label = "Game speed", default = 1,
+        choices = cycleChoices(GameSpeed.cycle, GameSpeed.levelLabel, 1) },
+    }
+  end)
+  SETTINGS = ok and built or {}
+  return SETTINGS
+end
+
+local function settingsSnapshot()
+  local SaveData = require("src.core.SaveData")
+  local okO, options = pcall(SaveData.loadOptions)
+  options = okO and options or {}
+  local out = {}
+  for _, s in ipairs(buildSettings()) do
+    local v = options[s.id]
+    if v == nil then v = s.default end
+    out[#out + 1] = {
+      id = s.id, label = s.label, value = v, choices = s.choices,
+    }
+  end
+  return out
+end
+
 -- ---------------------------------------------------------------- publishing
 
 local function snapshot()
@@ -120,7 +227,8 @@ local function snapshot()
     end
   end
 
-  return { games = games, mods = mods, ready = true }
+  return { games = games, mods = mods, settings = settingsSnapshot(),
+           ready = true }
 end
 
 local function publish()
@@ -160,6 +268,20 @@ local function applyCommand(cmd)
     local SaveData = require("src.core.SaveData")
     local ok, id = pcall(SaveData.createSlot, cmd.version)
     if ok and id then pcall(SaveData.setActiveSlot, cmd.version, id) end
+    lastPublished = nil
+    return
+  end
+
+  -- A settings row. Written straight into the global options file, which is
+  -- where every one of these already lives -- the in-game OPTIONS menu reads
+  -- and writes the same keys, so a value set here is the value it shows.
+  if cmd.action == "setOption" and type(cmd.id) == "string" then
+    local SaveData = require("src.core.SaveData")
+    local okO, options = pcall(SaveData.loadOptions)
+    if okO and type(options) == "table" then
+      options[cmd.id] = cmd.value
+      pcall(SaveData.saveOptions, options)
+    end
     lastPublished = nil
     return
   end
