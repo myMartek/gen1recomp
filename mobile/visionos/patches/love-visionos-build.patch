@@ -774,10 +774,10 @@ index 0000000..05bf9ce
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..9337f47
+index 0000000..d053c5d
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,570 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -842,6 +842,57 @@ index 0000000..9337f47
 +static cp_frame_t g_frame = nullptr;
 +static cp_drawable_t g_drawable = nullptr;
 +static simd_float4x4 g_originFromDevice = matrix_identity_float4x4;
++
++// ARKit world -> the space VRRig actually speaks.
++//
++// lib/VRRig.lua is written against OpenXR's LOCAL space: metres, +Y up, and
++// crucially an origin AT THE HEAD as it was at session start, because an
++// OpenXR runtime recentres there. ARKit does not. It hands out absolute world
++// coordinates whose origin sat on the floor and wherever the session began,
++// and the measured head came back at y = 1.03 m.
++//
++// Everything the rig places is then displaced by that: the diorama is anchored
++// 0.95 m from an origin it believes is the head, so with a metre of unexpected
++// height the anchor lands below the floor and the world is not where the
++// player is looking.
++//
++// So the bridge owns the correction, exactly as the port's plan called for and
++// as VRXR gets for free from its runtime: capture the first tracked device
++// pose, and emit every later pose relative to it. Y is deliberately NOT
++// cancelled in the rotation-free part -- see below.
++static bool g_haveRig = false;
++static simd_float4x4 g_rigFromOrigin = matrix_identity_float4x4;
++
++static void updateRigFromOrigin(simd_float4x4 originFromDevice)
++{
++	if (g_haveRig)
++		return;
++
++	simd_float4 p = originFromDevice.columns[3];
++	// Yaw only. Pitch and roll of the head at start are accidents of how
++	// someone happened to be looking; baking them in would tilt the world.
++	// -Z is forward, so this is the heading the player faced.
++	float yaw = atan2f(-originFromDevice.columns[2].x,
++					   -originFromDevice.columns[2].z);
++
++	// The inverse of T(x, y, z) . Ry(yaw), built directly. The translation
++	// includes Y: the rig wants the head at the origin, and leaving the real
++	// standing height in is precisely what displaced everything.
++	float c = cosf(-yaw), sn = sinf(-yaw);
++	simd_float4x4 rot = matrix_identity_float4x4;
++	rot.columns[0] = (simd_float4){  c, 0, -sn, 0 };
++	rot.columns[2] = (simd_float4){ sn, 0,   c, 0 };
++
++	simd_float4x4 trn = matrix_identity_float4x4;
++	trn.columns[3] = (simd_float4){ -p.x, -p.y, -p.z, 1 };
++
++	g_rigFromOrigin = simd_mul(rot, trn);
++	g_haveRig = true;
++
++	printf("[xr] rig origin captured: head was %.2f,%.2f,%.2f yaw %.1f deg\n",
++		   p.x, p.y, p.z, yaw * 57.2957795f);
++	fflush(stdout);
++}
 +
 +// A love Texture per drawable texture, kept alive across frames. The
 +// compositor recycles a small ring of drawables, so this settles at a handful
@@ -1081,6 +1132,7 @@ index 0000000..9337f47
 +		if (status == ar_device_anchor_query_status_success)
 +		{
 +			g_originFromDevice = ar_anchor_get_origin_from_anchor_transform(anchor);
++			updateRigFromOrigin(g_originFromDevice);
 +			cp_drawable_set_device_anchor(g_drawable, anchor);
 +		}
 +	}
@@ -1111,7 +1163,11 @@ index 0000000..9337f47
 +	{
 +		cp_view_t view = cp_drawable_get_view(g_drawable, i);
 +		simd_float4x4 deviceFromView = cp_view_get_transform(view);
-+		simd_float4x4 worldFromView = simd_mul(g_originFromDevice, deviceFromView);
++		// Recentred: rigFromOrigin . originFromDevice . deviceFromView.
++		// Without the first term these are ARKit's absolute world coordinates,
++		// and VRRig reads them as if the origin were the head.
++		simd_float4x4 worldFromView =
++			simd_mul(g_rigFromOrigin, simd_mul(g_originFromDevice, deviceFromView));
 +
 +		simd_float4x4 proj = cp_drawable_compute_projection(
 +			g_drawable, cp_axis_direction_convention_right_up_back, i);
@@ -1224,23 +1280,21 @@ index 0000000..9337f47
 +	}
 +	id<MTLCommandBuffer> cmd = [queue commandBuffer];
 +
-+	// DEPTH, which this path had never written at all.
++	// DEPTH -- the thing this path has never written, and the only stage left
++	// that can shrink a fully painted texture.
 +	//
-+	// CompositorServices reprojects every submitted frame against the
-+	// drawable's depth texture -- that is how a frame rendered for one head
-+	// pose is shown correctly at the pose it actually arrives at. Nothing here
-+	// ever touched it, so it reprojected against whatever was left in that
-+	// memory: the picture survived in a small, oddly shaped island with stray
-+	// tiles around its edges, different in each eye, while everything INSIDE
-+	// the island looked perfectly correct. Which is exactly how it was
-+	// described, and is why the shape never matched anything in the renderer.
++	// CompositorServices reprojects every frame against the drawable's depth
++	// texture. Nothing here ever wrote it, so it reprojected against whatever
++	// was in that memory -- and a test pattern covering the ENTIRE texture
++	// still arrives as a small patch in the middle of the eye, which no stage
++	// before this one can explain.
 +	//
-+	// Cleared to 0, the far value under the reverse-Z convention the
-+	// compositor uses, so the whole frame reprojects as distant geometry --
-+	// the same thing the host's own renderer does for its panel. Writing real
-+	// per-pixel depth would reproject better still, but that means handing the
-+	// scene's depth buffer across, and a defined far plane is the difference
-+	// between a correct frame and this.
++	// Clearing it to 0 was tried and turned the space black. That is consistent
++	// with 0 meaning NEAR here rather than far: a frame declared to be at the
++	// near plane reprojects straight past the viewer. So this clears to the
++	// other end of the range. If the picture opens up, the convention was the
++	// whole story; if it goes black again, depth is not it and the reversal
++	// says so cleanly.
 +	size_t depthCount = cp_drawable_get_texture_count(g_drawable);
 +	for (size_t i = 0; i < depthCount; i++)
 +	{
@@ -1251,7 +1305,7 @@ index 0000000..9337f47
 +		pass.depthAttachment.texture = depth;
 +		pass.depthAttachment.loadAction = MTLLoadActionClear;
 +		pass.depthAttachment.storeAction = MTLStoreActionStore;
-+		pass.depthAttachment.clearDepth = 0.0;
++		pass.depthAttachment.clearDepth = 1.0;
 +		id<MTLRenderCommandEncoder> enc =
 +			[cmd renderCommandEncoderWithDescriptor:pass];
 +		[enc endEncoding];
