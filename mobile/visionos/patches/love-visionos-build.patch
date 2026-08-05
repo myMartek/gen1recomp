@@ -774,10 +774,10 @@ index 0000000..05bf9ce
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..d425c36
+index 0000000..9337f47
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,516 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -807,6 +807,8 @@ index 0000000..d425c36
 +#ifdef LOVE_VISIONOS
 +
 +#include "wrap_XR.h"
++
++#include <cstdio>   // TEMPORARY: lifecycle logging, see the [xr] prints below
 +
 +#include "common/runtime.h"
 +#include "common/Exception.h"
@@ -908,6 +910,14 @@ index 0000000..d425c36
 +	g_drawable = nullptr;
 +	g_claimed = false;
 +	g_layer = incoming;
++
++	// TEMPORARY: re-entering the immersive space still comes back black after
++	// three separate stale-layer fixes, so the lifecycle itself gets printed.
++	// Which layer arrives, which one leaves, and in what order relative to the
++	// thread that is winding down -- guessing at that ordering is what put the
++	// guard in clearLayerRenderer, and it evidently is not the whole story.
++	printf("[xr] layer -> %p\n", (__bridge void *) incoming);
++	fflush(stdout);
 +}
 +
 +extern "C" bool love_visionos_xrClaimed()
@@ -987,6 +997,9 @@ index 0000000..d425c36
 +	if (g_layer == nullptr
 +		|| cp_layer_renderer_get_state(g_layer) == cp_layer_renderer_state_invalidated)
 +	{
++		printf("[xr] claim refused: layer=%p state=%d\n", (__bridge void *) g_layer,
++			   g_layer ? (int) cp_layer_renderer_get_state(g_layer) : -1);
++		fflush(stdout);
 +		luax_pushboolean(L, false);
 +		return 1;
 +	}
@@ -1004,6 +1017,8 @@ index 0000000..d425c36
 +	}
 +
 +	g_claimed = true;
++	printf("[xr] claim ok on %p\n", (__bridge void *) g_layer);
++	fflush(stdout);
 +	luax_pushboolean(L, true);
 +	return 1;
 +}
@@ -1198,9 +1213,49 @@ index 0000000..d425c36
 +
 +	// The compositor needs a command buffer of its own to schedule the
 +	// present against; LOVE's is already committed by the time we get here.
-+	id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-+	id<MTLCommandQueue> queue = [device newCommandQueue];
++	// Device and queue are made ONCE: they were being allocated per frame,
++	// which is ninety command queues a second for one command buffer each.
++	static id<MTLDevice> device = nil;
++	static id<MTLCommandQueue> queue = nil;
++	if (queue == nil)
++	{
++		device = MTLCreateSystemDefaultDevice();
++		queue = [device newCommandQueue];
++	}
 +	id<MTLCommandBuffer> cmd = [queue commandBuffer];
++
++	// DEPTH, which this path had never written at all.
++	//
++	// CompositorServices reprojects every submitted frame against the
++	// drawable's depth texture -- that is how a frame rendered for one head
++	// pose is shown correctly at the pose it actually arrives at. Nothing here
++	// ever touched it, so it reprojected against whatever was left in that
++	// memory: the picture survived in a small, oddly shaped island with stray
++	// tiles around its edges, different in each eye, while everything INSIDE
++	// the island looked perfectly correct. Which is exactly how it was
++	// described, and is why the shape never matched anything in the renderer.
++	//
++	// Cleared to 0, the far value under the reverse-Z convention the
++	// compositor uses, so the whole frame reprojects as distant geometry --
++	// the same thing the host's own renderer does for its panel. Writing real
++	// per-pixel depth would reproject better still, but that means handing the
++	// scene's depth buffer across, and a defined far plane is the difference
++	// between a correct frame and this.
++	size_t depthCount = cp_drawable_get_texture_count(g_drawable);
++	for (size_t i = 0; i < depthCount; i++)
++	{
++		id<MTLTexture> depth = cp_drawable_get_depth_texture(g_drawable, i);
++		if (depth == nil)
++			continue;
++		MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
++		pass.depthAttachment.texture = depth;
++		pass.depthAttachment.loadAction = MTLLoadActionClear;
++		pass.depthAttachment.storeAction = MTLStoreActionStore;
++		pass.depthAttachment.clearDepth = 0.0;
++		id<MTLRenderCommandEncoder> enc =
++			[cmd renderCommandEncoderWithDescriptor:pass];
++		[enc endEncoding];
++	}
 +
 +	cp_drawable_encode_present(g_drawable, cmd);
 +	[cmd commit];
