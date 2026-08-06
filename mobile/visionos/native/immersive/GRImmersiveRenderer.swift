@@ -171,6 +171,12 @@ final class GRImmersiveRenderer {
     }
 
     private func renderFrame() {
+        // Atomic handover with love.xr. A plain poll in run() is not enough:
+        // Lua can claim the layer while this function sleeps until optimal
+        // input time, leaving two clients to query the same compositor frame.
+        guard love_visionos_beginHostFrame() else { return }
+        defer { love_visionos_endHostFrame() }
+
         guard let frame = layerRenderer.queryNextFrame() else { return }
 
         frame.startUpdate()
@@ -182,14 +188,14 @@ final class GRImmersiveRenderer {
         // frame is actually shown.
         LayerRenderer.Clock().wait(until: timing.optimalInputTime)
 
-        frame.startSubmission()
+        // xrOS 26 can provide built-in and capture targets together. The old
+        // queryDrawable() aborts for a foveated quality-1 layer; the array API
+        // must be queried before submission starts.
+        let drawables = frame.queryDrawables()
+        guard let drawable = drawables.first(where: { $0.target == .builtIn })
+                ?? drawables.first else { return }
 
-        // No drawable means this frame is not to be rendered. Return WITHOUT
-        // endSubmission: the compositor treats "submission ended but nothing
-        // presented" as a client error and aborts the process with
-        // BUG IN CLIENT. (The simulator tolerated it; a real Vision Pro does
-        // not, which is how this was found.)
-        guard let drawable = frame.queryDrawable() else { return }
+        frame.startSubmission()
 
         // Anchor the frame to where the device will be when it is displayed,
         // not where it is now. Handing it to the drawable also lets the
@@ -264,7 +270,19 @@ final class GRImmersiveRenderer {
                 pass.depthAttachment.clearDepth = 0.0
             }
 
+            let rateMap = drawable.rasterizationRateMaps.isEmpty ? nil
+                : drawable.rasterizationRateMaps[
+                    min(layered ? 0 : index, drawable.rasterizationRateMaps.count - 1)]
+            pass.rasterizationRateMap = rateMap
+
             guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { continue }
+            if let rateMap {
+                let size = rateMap.screenSize
+                encoder.setViewport(MTLViewport(originX: 0, originY: 0,
+                                                width: Double(size.width),
+                                                height: Double(size.height),
+                                                znear: 0, zfar: 1))
+            }
 
             // Drawn again: with the launcher dismissed during immersion this
             // is the only thing in the space. It is softer than the native

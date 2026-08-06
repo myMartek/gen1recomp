@@ -52,6 +52,10 @@ void love_visionos_clearLayerRenderer(void *layerRenderer);
 /// two loops calling cp_frame_* on one layer is a race.
 bool love_visionos_xrClaimed(void);
 
+/// Atomically brackets one host fallback frame during the handover to Lua.
+bool love_visionos_beginHostFrame(void);
+void love_visionos_endHostFrame(void);
+
 /// LOVE's save directory, once the filesystem module is up. Empty before that.
 /// This is the only reliable answer to "where do I put a ROM".
 const char *love_visionos_saveDirectory(void);

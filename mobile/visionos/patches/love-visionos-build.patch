@@ -92,6 +92,63 @@ rotating set of snapshot textures plus an MTLSharedEvent to order them, which
 is the right answer if that serialisation ever shows up in a frame time; at
 these resolutions it should not.
 
+Part 8 -- submission order and frame pacing. love.xr renders from love.update,
+before LOVE's ordinary present() commits its Metal work. Flushing draw batches
+only closes no command buffer, so the compositor's present command could be
+committed first and display the previous eye image. submitXRCommands() closes
+and commits the eye render before encodePresent is committed on the same queue.
+
+The measured render loop sustains 45 submissions/s, so one repeat declares its
+cadence honestly to a 90 Hz compositor. CompositorServices counts repeats in
+addition to the first display; the old value of 2 therefore produced only 30
+new frames/s and visible trails. The non-foveated layer keeps the platform
+default of about 0.52: the device rejects tested values of 0.60 and 1.0
+without foveation and aborts the layer on current xrOS.
+
+Until the scene produces correctly oriented reverse-Z depth, the compositor
+depth is cleared to 0.1, safely inside its valid range. Clearing to exactly 0
+put every pixel on the far clip plane and the real device discarded the whole
+image; feeding the old ordinary, vertically mismatched scene depth was no
+better. The layer is retained across the compositor timing wait and its state
+is checked again before submission, because the Digital Crown can invalidate
+it during that wait.
+
+Part 9 -- foveated final presentation. xrOS rejects render-quality values above
+the platform default when foveation is disabled. The layer therefore reserves
+quality 1.0 with foveation enabled. The voxel scene renders directly into
+private colour and readable-depth intermediaries carrying the drawable's
+flipped eye-tracked MTLRasterizationRateMap. Their LÖVE dimensions are logical
+screen pixels while their Metal allocations contain only physical fragments,
+so geometry and screen-space effects are rasterized at true gaze density. A
+native pass maps the physical intermediary into the drawable with the regular
+rate map and performs the Metal vertical correction at the same time.
+An atomic host-frame bracket completes the ownership transfer: claim() first
+blocks new fallback frames, waits for any already in flight to finish, and only
+then starts Lua's loop. A boolean poll alone raced during the compositor timing
+wait and let both clients query one frame.
+Both loops use xrOS 26's drawable-array API and query it before starting frame
+submission; the deprecated single-drawable call aborts on foveated layers.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
 --- a/src/common/config.h
@@ -233,10 +290,10 @@ index 50930f1..0e62945 100644
  			if (r == RENDERER_METAL)
  				std::tie(instance, err) = metal::createInstance();
 diff --git a/src/modules/graphics/metal/Graphics.h b/src/modules/graphics/metal/Graphics.h
-index c7331ba..c41df9e 100644
+index c7331ba..a8dd547 100644
 --- a/src/modules/graphics/metal/Graphics.h
 +++ b/src/modules/graphics/metal/Graphics.h
-@@ -66,6 +66,22 @@ class Graphics final : public love::graphics::Graphics
+@@ -66,6 +66,28 @@ class Graphics final : public love::graphics::Graphics
  
  	void backbufferChanged(const BackbufferSettings &settings) override;
  	bool setMode(void *context, const BackbufferSettings &settings) override;
@@ -253,13 +310,19 @@ index c7331ba..c41df9e 100644
 +	// LOVE is drawing into it. Also void* for the same reason as above.
 +	void *getCommandQueue() const;
 +
++	// Ends and commits the Metal command buffer containing the eye renders.
++	// love.xr submits from love.update, before LOVE's ordinary end-of-frame
++	// present(), so flushing batched vertices alone is not sufficient.
++	void submitXRCommands();
++
 +	// Wraps an MTLTexture owned by someone else (a CompositorServices
 +	// drawable) as a love Texture that can be used as a render target.
-+	love::graphics::Texture *newTextureFromHandle(void *mtlTexture);
++	love::graphics::Texture *newTextureFromHandle(void *mtlTexture,
++		int logicalWidth = 0, int logicalHeight = 0, void *rateMap = nullptr);
  	void unSetMode() override;
  
  	void setActive(bool active) override;
-@@ -221,6 +237,13 @@ class Graphics final : public love::graphics::Graphics
+@@ -221,6 +243,13 @@ class Graphics final : public love::graphics::Graphics
  
  	CAMetalLayer *metalLayer;
  	id<CAMetalDrawable> activeDrawable;
@@ -274,7 +337,7 @@ index c7331ba..c41df9e 100644
  
  	uint32 dirtyRenderState;
 diff --git a/src/modules/graphics/metal/Graphics.mm b/src/modules/graphics/metal/Graphics.mm
-index c8d5b18..6eab8a2 100644
+index c8d5b18..45cb723 100644
 --- a/src/modules/graphics/metal/Graphics.mm
 +++ b/src/modules/graphics/metal/Graphics.mm
 @@ -19,6 +19,11 @@
@@ -409,7 +472,7 @@ index c8d5b18..6eab8a2 100644
  	metalLayer.device = device;
  	metalLayer.pixelFormat = isGammaCorrect() ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
  
-@@ -556,6 +663,56 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -556,6 +663,68 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	return true;
  }}
  
@@ -426,11 +489,15 @@ index c8d5b18..6eab8a2 100644
 +	case MTLPixelFormatRGBA8Unorm:      return love::PIXELFORMAT_RGBA8_UNORM;
 +	case MTLPixelFormatRGBA8Unorm_sRGB: return love::PIXELFORMAT_RGBA8_sRGB;
 +	case MTLPixelFormatRGBA16Float:     return love::PIXELFORMAT_RGBA16_FLOAT;
++	case MTLPixelFormatRG16Float:       return love::PIXELFORMAT_RG16_FLOAT;
++	case MTLPixelFormatR32Float:        return love::PIXELFORMAT_R32_FLOAT;
++	case MTLPixelFormatDepth32Float:    return love::PIXELFORMAT_DEPTH32_FLOAT;
 +	default:                            return love::PIXELFORMAT_UNKNOWN;
 +	}
 +}
 +
-+love::graphics::Texture *Graphics::newTextureFromHandle(void *mtlTexture)
++love::graphics::Texture *Graphics::newTextureFromHandle(void *mtlTexture,
++	int logicalWidth, int logicalHeight, void *rateMap)
 +{ @autoreleasepool {
 +	id<MTLTexture> mtl = (__bridge id<MTLTexture>) mtlTexture;
 +	if (mtl == nil)
@@ -439,8 +506,8 @@ index c8d5b18..6eab8a2 100644
 +	// Describe the incoming texture rather than requesting one: width, height
 +	// and format all come from what Metal already made.
 +	love::graphics::Texture::Settings settings;
-+	settings.width = (int) mtl.width;
-+	settings.height = (int) mtl.height;
++	settings.width = logicalWidth > 0 ? logicalWidth : (int) mtl.width;
++	settings.height = logicalHeight > 0 ? logicalHeight : (int) mtl.height;
 +	settings.renderTarget = true;
 +	settings.readable.set(true);
 +	settings.mipmaps = love::graphics::Texture::MIPMAPS_NONE;
@@ -450,7 +517,9 @@ index c8d5b18..6eab8a2 100644
 +	if (settings.format == love::PIXELFORMAT_UNKNOWN)
 +		throw love::Exception("Unsupported Metal pixel format for an adopted texture.");
 +
-+	return new Texture(this, device, mtl, settings);
++	auto texture = new Texture(this, device, mtl, settings);
++	texture->setRasterizationRateMap((__bridge id<MTLRasterizationRateMap>) rateMap);
++	return texture;
 +}}
 +
 +void *Graphics::getVirtualScreenTexture() const
@@ -463,10 +532,16 @@ index c8d5b18..6eab8a2 100644
 +	return (__bridge void *) commandQueue;
 +}
 +
++void Graphics::submitXRCommands()
++{
++	flushBatchedDraws();
++	submitCommandBuffer(SUBMIT_DONE);
++}
++
  void Graphics::unSetMode()
  { @autoreleasepool {
  	if (!isCreated())
-@@ -570,6 +727,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
+@@ -570,6 +739,7 @@ static inline void setSampler(id<MTLComputeCommandEncoder> encoder, Graphics::Re
  	created = false;
  	metalLayer = nil;
  	activeDrawable = nil;
@@ -474,7 +549,7 @@ index c8d5b18..6eab8a2 100644
  }}
  
  void Graphics::setActive(bool enable)
-@@ -661,7 +819,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -661,7 +831,7 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  		const auto &rts = states.back().renderTargets;
  		if (rts.getFirstTarget().texture.get() == nullptr)
  		{
@@ -483,7 +558,7 @@ index c8d5b18..6eab8a2 100644
  			{
  				// This is reset to YES after each frame.
  				// TODO: Does setting this reallocate memory?
-@@ -671,16 +829,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
+@@ -671,16 +841,18 @@ static inline void setAttachment(const Graphics::RenderTarget &rt, MTLRenderPass
  				activeDrawable = [metalLayer nextDrawable];
  			}
  
@@ -504,7 +579,22 @@ index c8d5b18..6eab8a2 100644
  				passDesc.colorAttachments[0].resolveTexture = nil;
  			}
  
-@@ -1694,8 +1854,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1480,6 +1652,14 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+ 	endPass(false);
+ 
+ 	bool isbackbuffer = rts.getFirstTarget().texture == nullptr;
++	passDesc.rasterizationRateMap = nil;
++	if (!isbackbuffer)
++	{
++		auto first = dynamic_cast<love::graphics::metal::Texture *>(
++			rts.getFirstTarget().texture);
++		if (first != nullptr)
++			passDesc.rasterizationRateMap = first->getRasterizationRateMap();
++	}
+ 
+ 	// Set up render pass descriptor for the next useRenderEncoder call.
+ 	// The backbuffer will be set up in useRenderEncoder rather than here.
+@@ -1694,8 +1874,10 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	id<MTLBuffer> screenshotbuffer = nil;
  
@@ -517,7 +607,7 @@ index c8d5b18..6eab8a2 100644
  
  	if (!pendingScreenshotCallbacks.empty())
  	{
-@@ -1707,7 +1869,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1707,7 +1889,7 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  		auto blitencoder = useBlitEncoder();
  
@@ -526,7 +616,7 @@ index c8d5b18..6eab8a2 100644
  						 sourceSlice:0
  						 sourceLevel:0
  						sourceOrigin:MTLOriginMake(0, 0, 0)
-@@ -1732,6 +1894,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
+@@ -1732,6 +1914,8 @@ static inline void advanceVertexOffsets(const VertexAttributes &attributes, Buff
  
  	if (cmd != nil && activeDrawable != nil)
  		[cmd presentDrawable:activeDrawable];
@@ -536,7 +626,7 @@ index c8d5b18..6eab8a2 100644
  	submitCommandBuffer(SUBMIT_DONE);
  
 diff --git a/src/modules/graphics/metal/Texture.h b/src/modules/graphics/metal/Texture.h
-index f83844b..b2c21dd 100644
+index f83844b..691cf10 100644
 --- a/src/modules/graphics/metal/Texture.h
 +++ b/src/modules/graphics/metal/Texture.h
 @@ -39,6 +39,12 @@ class Texture final : public love::graphics::Texture
@@ -552,6 +642,23 @@ index f83844b..b2c21dd 100644
  	virtual ~Texture();
  
  	void copyFromBuffer(love::graphics::Buffer *source, size_t sourceoffset, int sourcewidth, size_t size, int slice, int mipmap, const Rect &rect) override;
+@@ -53,6 +59,8 @@ class Texture final : public love::graphics::Texture
+ 	int getMSAA() const override { return actualMSAASamples; }
+ 
+ 	id<MTLSamplerState> getMTLSampler() const { return sampler; }
++	id<MTLRasterizationRateMap> getRasterizationRateMap() const { return rasterizationRateMap; }
++	void setRasterizationRateMap(id<MTLRasterizationRateMap> map) { rasterizationRateMap = map; }
+ 
+ private:
+ 
+@@ -62,6 +70,7 @@ class Texture final : public love::graphics::Texture
+ 	id<MTLTexture> texture = nil;
+ 	id<MTLTexture> msaaTexture = nil;
+ 	id<MTLSamplerState> sampler = nil;
++	id<MTLRasterizationRateMap> rasterizationRateMap = nil;
+ 
+ 	int actualMSAASamples = 1;
+ 
 diff --git a/src/modules/graphics/metal/Texture.mm b/src/modules/graphics/metal/Texture.mm
 index 18d3660..3867844 100644
 --- a/src/modules/graphics/metal/Texture.mm
@@ -747,10 +854,10 @@ index f3b0966..071f5b2 100644
  			{
 diff --git a/src/modules/xr/wrap_XR.h b/src/modules/xr/wrap_XR.h
 new file mode 100644
-index 0000000..05bf9ce
+index 0000000..6d66d91
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,25 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS. See wrap_XR.mm.
 + */
@@ -769,15 +876,19 @@ index 0000000..05bf9ce
 +extern "C" void love_visionos_setLayerRenderer(void *layerRenderer);
 +/// True while Lua owns the frame loop; the host's renderer stands down.
 +extern "C" bool love_visionos_xrClaimed(void);
++/// Atomically brackets one host fallback frame so Lua cannot take over in the
++/// middle of its CompositorServices submission.
++extern "C" bool love_visionos_beginHostFrame(void);
++extern "C" void love_visionos_endHostFrame(void);
 +
 +#endif // LOVE_VISIONOS
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..d053c5d
+index 0000000..673a4aa
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,1322 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -809,12 +920,16 @@ index 0000000..d053c5d
 +#include "wrap_XR.h"
 +
 +#include <cstdio>   // TEMPORARY: lifecycle logging, see the [xr] prints below
++#include <atomic>
++#include <unistd.h>
 +
 +#include "common/runtime.h"
 +#include "common/Exception.h"
 +#include "graphics/Graphics.h"
 +#include "graphics/Texture.h"
++#include "graphics/wrap_Texture.h"
 +#include "graphics/metal/Graphics.h"
++#include "graphics/metal/Texture.h"
 +
 +#import <ARKit/ARKit.h>
 +#import <CompositorServices/CompositorServices.h>
@@ -830,6 +945,8 @@ index 0000000..d053c5d
 +// One frame in flight at a time, which is what the Lua side can express: it
 +// calls beginFrame, draws, then submitFrame. Holding these here rather than
 +// handing opaque values to Lua keeps cdata out of the mod entirely.
++// Under Objective-C++ this SDK handle is an NSObject pointer, so ARC keeps the
++// global and each local copy strong while the compositor thread winds down.
 +static cp_layer_renderer_t g_layer = nullptr;
 +static ar_session_t g_arSession = nullptr;
 +static ar_world_tracking_provider_t g_worldTracking = nullptr;
@@ -837,10 +954,24 @@ index 0000000..d053c5d
 +// Set while Lua owns the frame loop. The host's own renderer polls this and
 +// stands down: two loops calling cp_frame_* on one layer would be a race, and
 +// the host keeps drawing until the mod actually turns VR on.
-+static bool g_claimed = false;
++static std::atomic<bool> g_claimed(false);
++// True from immediately before the Swift fallback asks for a frame until it
++// has either presented or abandoned it. claim() waits this out before Lua
++// touches the same cp_layer_renderer_t.
++static std::atomic<bool> g_hostFrameActive(false);
 +
 +static cp_frame_t g_frame = nullptr;
 +static cp_drawable_t g_drawable = nullptr;
++// Linear eye images rendered by LÖVE. The final native Metal pass maps these
++// into the compositor's foveated physical textures.
++static id<MTLTexture> g_eyeSources[2] = { nil, nil };
++static love::graphics::Texture *g_eyeRenderColors[2] = { nullptr, nullptr };
++static love::graphics::Texture *g_eyeRenderDepths[2] = { nullptr, nullptr };
++// Linear, physical-resolution snapshots used only by screen-space effects
++// such as water. They cover the whole logical eye in ordinary 0..1 UVs.
++static love::graphics::Texture *g_eyeResolvedColors[2] = { nullptr, nullptr };
++static love::graphics::Texture *g_eyeResolvedDepths[2] = { nullptr, nullptr };
++static love::graphics::Texture *g_eyeRateLookups[2] = { nullptr, nullptr };
 +static simd_float4x4 g_originFromDevice = matrix_identity_float4x4;
 +
 +// ARKit world -> the space VRRig actually speaks.
@@ -872,8 +1003,13 @@ index 0000000..d053c5d
 +	// Yaw only. Pitch and roll of the head at start are accidents of how
 +	// someone happened to be looking; baking them in would tilt the world.
 +	// -Z is forward, so this is the heading the player faced.
-+	float yaw = atan2f(-originFromDevice.columns[2].x,
-+					   -originFromDevice.columns[2].z);
++	// Extract the Ry angle from the device's +Z basis. rot below applies its
++	// negative, so rot * originFromDevice has identity yaw on the first frame.
++	// The old pair negated both components, which makes an identity pose report
++	// pi instead of zero and recentres the whole world backwards -- notably
++	// exposing the mirrored back of signs.
++	float yaw = atan2f(originFromDevice.columns[2].x,
++					   originFromDevice.columns[2].z);
 +
 +	// The inverse of T(x, y, z) . Ry(yaw), built directly. The translation
 +	// includes Y: the rig wants the head at the origin, and leaving the real
@@ -905,6 +1041,368 @@ index 0000000..d053c5d
 +{
 +	auto gfx = Module::getInstance<love::graphics::Graphics>(Module::M_GRAPHICS);
 +	return dynamic_cast<love::graphics::metal::Graphics *>(gfx);
++}
++
++static void releaseEyeRenderTargets()
++{
++	for (int i = 0; i < 2; i++)
++	{
++		if (g_eyeRenderColors[i] != nullptr)
++			g_eyeRenderColors[i]->release();
++		if (g_eyeRenderDepths[i] != nullptr)
++			g_eyeRenderDepths[i]->release();
++		if (g_eyeResolvedColors[i] != nullptr)
++			g_eyeResolvedColors[i]->release();
++		if (g_eyeResolvedDepths[i] != nullptr)
++			g_eyeResolvedDepths[i]->release();
++		if (g_eyeRateLookups[i] != nullptr)
++			g_eyeRateLookups[i]->release();
++		g_eyeRenderColors[i] = nullptr;
++		g_eyeRenderDepths[i] = nullptr;
++		g_eyeResolvedColors[i] = nullptr;
++		g_eyeResolvedDepths[i] = nullptr;
++		g_eyeRateLookups[i] = nullptr;
++	}
++}
++
++static bool ensureEyeRenderTargets(int index)
++{
++	if (g_drawable == nullptr || index < 0 || index >= 2)
++		return false;
++	auto gfx = getMetalGraphics();
++	if (gfx == nullptr)
++		return false;
++
++	id<MTLTexture> drawableColor = cp_drawable_get_color_texture(g_drawable, index);
++	size_t mapCount = cp_drawable_get_rasterization_rate_map_count(g_drawable);
++	id<MTLRasterizationRateMap> map = index < (int) mapCount
++		? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, index) : nil;
++	if (drawableColor == nil || map == nil)
++		return false;
++	MTLSize screen = map.screenSize;
++
++	bool matches = g_eyeRenderColors[index] != nullptr
++		&& g_eyeRenderDepths[index] != nullptr
++		&& g_eyeRenderColors[index]->getPixelWidth() == (int) screen.width
++		&& g_eyeRenderColors[index]->getPixelHeight() == (int) screen.height;
++	if (matches)
++	{
++		id<MTLTexture> existing = (__bridge id<MTLTexture>)
++			(void *) g_eyeRenderColors[index]->getHandle();
++		matches = existing.width == drawableColor.width
++			&& existing.height == drawableColor.height;
++	}
++
++	if (!matches)
++	{
++		if (g_eyeRenderColors[index] != nullptr)
++			g_eyeRenderColors[index]->release();
++		if (g_eyeRenderDepths[index] != nullptr)
++			g_eyeRenderDepths[index]->release();
++		g_eyeRenderColors[index] = nullptr;
++		g_eyeRenderDepths[index] = nullptr;
++
++		MTLTextureDescriptor *colorDesc = [MTLTextureDescriptor
++			texture2DDescriptorWithPixelFormat:drawableColor.pixelFormat
++			width:drawableColor.width height:drawableColor.height mipmapped:NO];
++		colorDesc.storageMode = MTLStorageModePrivate;
++		colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++		id<MTLTexture> color = [drawableColor.device newTextureWithDescriptor:colorDesc];
++
++		MTLTextureDescriptor *depthDesc = [MTLTextureDescriptor
++			texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
++			width:drawableColor.width height:drawableColor.height mipmapped:NO];
++		depthDesc.storageMode = MTLStorageModePrivate;
++		depthDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++		id<MTLTexture> depth = [drawableColor.device newTextureWithDescriptor:depthDesc];
++		if (color == nil || depth == nil)
++			return false;
++
++		g_eyeRenderColors[index] = gfx->newTextureFromHandle(
++			(__bridge void *) color, (int) screen.width, (int) screen.height,
++			(__bridge void *) map);
++		g_eyeRenderDepths[index] = gfx->newTextureFromHandle(
++			(__bridge void *) depth, (int) screen.width, (int) screen.height,
++			(__bridge void *) map);
++	}
++
++	auto color = dynamic_cast<love::graphics::metal::Texture *>(g_eyeRenderColors[index]);
++	auto depth = dynamic_cast<love::graphics::metal::Texture *>(g_eyeRenderDepths[index]);
++	if (color == nullptr || depth == nullptr)
++		return false;
++	color->setRasterizationRateMap(map);
++	depth->setRasterizationRateMap(map);
++	return true;
++}
++
++// A tiny final-pass shader. The scene was already rasterized through the
++// drawable's flipped rate map, so this pass copies the packed physical image
++// into the compositor's regularly-oriented physical texture.
++static id<MTLLibrary> g_foveatedCopyLibrary = nil;
++static std::map<uint64_t, id<MTLRenderPipelineState>> g_foveatedCopyPipelines;
++static std::map<uint64_t, id<MTLRenderPipelineState>> g_foveatedResolvePipelines;
++static id<MTLRenderPipelineState> g_rateLookupPipeline = nil;
++
++static id<MTLRenderPipelineState> foveatedCopyPipeline(id<MTLDevice> device,
++											   MTLPixelFormat colorFormat,
++											   MTLPixelFormat depthFormat)
++{
++	uint64_t key = ((uint64_t) colorFormat << 32) | (uint32_t) depthFormat;
++	auto found = g_foveatedCopyPipelines.find(key);
++	if (found != g_foveatedCopyPipelines.end())
++		return found->second;
++
++	if (g_foveatedCopyLibrary == nil)
++	{
++		NSString *source = @R"metal(
++#include <metal_stdlib>
++using namespace metal;
++struct CopyOut { float4 position [[position]]; float2 uv; };
++vertex CopyOut xr_copy_vertex(uint id [[vertex_id]]) {
++    const float2 positions[3] = { float2(-1,-1), float2(3,-1), float2(-1,3) };
++    float2 p = positions[id];
++    CopyOut out;
++    out.position = float4(p, 0, 1);
++    // The mod's Metal eye is vertically mirrored. With Metal's top-left
++    // viewport, this interpolation turns it over during the final copy.
++    out.uv = (p + 1.0) * 0.5;
++    return out;
++}
++struct CopyUniforms {
++    float2 invPhysical;   // 1 / source physical size
++    float2 screenSize;    // logical eye, both maps share it
++};
++fragment float4 xr_copy_fragment(CopyOut in [[stage_in]],
++                                 texture2d<float> source [[texture(0)]],
++                                 constant rasterization_rate_map_data &destRate [[buffer(0)]],
++                                 constant rasterization_rate_map_data &srcRate [[buffer(1)]],
++                                 constant CopyUniforms &uniforms [[buffer(2)]]) {
++    constexpr sampler linearSampler(filter::linear,
++                                    address::clamp_to_edge);
++    // Through LOGICAL space, not by mirroring the physical row index.
++    //
++    // This used to flip physical Y directly, on the assumption that the
++    // flipped rate map is the exact vertical mirror of the regular one. That
++    // holds for a fixed foveation pattern and not for an eye-tracked one: the
++    // dense region follows the gaze, so mirroring a physical row lands on a
++    // different logical row than mirroring the logical coordinate does. The
++    // error is zero where the two agree -- at the gaze point -- and grows with
++    // distance from it, which is exactly "the middle is right and everything
++    // else is bent around it".
++    //
++    // Decode this destination fragment to logical with the DESTINATION map,
++    // mirror there, then encode back with the SOURCE map. Exact for any pair.
++    rasterization_rate_map_decoder destDecoder(destRate);
++    rasterization_rate_map_decoder srcDecoder(srcRate);
++    float2 logical = destDecoder.map_physical_to_screen_coordinates(in.position.xy);
++    logical.y = uniforms.screenSize.y - logical.y;
++    float2 physical = srcDecoder.map_screen_to_physical_coordinates(logical);
++    return source.sample(linearSampler, physical * uniforms.invPhysical);
++}
++struct ResolveUniforms { float2 screenSize; float2 outputSize; };
++struct ResolveOut {
++    float4 color [[color(0)]];
++    float depth [[color(1)]];
++};
++fragment ResolveOut xr_resolve_fragment(
++        CopyOut in [[stage_in]],
++        texture2d<float> packedColor [[texture(0)]],
++        depth2d<float> packedDepth [[texture(1)]],
++        constant rasterization_rate_map_data &rateData [[buffer(0)]],
++        constant ResolveUniforms &uniforms [[buffer(1)]]) {
++    constexpr sampler colorSampler(coord::pixel, filter::linear,
++                                   address::clamp_to_edge);
++    constexpr sampler depthSampler(coord::pixel, filter::nearest,
++                                   address::clamp_to_edge);
++    rasterization_rate_map_decoder decoder(rateData);
++    // This output is a conventional physical-resolution texture spanning the
++    // whole logical eye. Convert its pixel to logical screen coordinates, then
++    // ask Metal where that point lives in the packed intermediary.
++    float2 logical = in.position.xy * uniforms.screenSize / uniforms.outputSize;
++    float2 physical = decoder.map_screen_to_physical_coordinates(logical);
++    ResolveOut out;
++    out.color = packedColor.sample(colorSampler, physical);
++    out.depth = packedDepth.sample(depthSampler, physical);
++    return out;
++}
++struct RateLookupUniforms {
++    float2 screenSize;
++    float2 physicalSize;
++    float2 outputSize;
++};
++fragment half2 xr_rate_lookup_fragment(
++        CopyOut in [[stage_in]],
++        constant rasterization_rate_map_data &rateData [[buffer(0)]],
++        constant RateLookupUniforms &uniforms [[buffer(1)]]) {
++    rasterization_rate_map_decoder decoder(rateData);
++    float2 logical = in.position.xy * uniforms.screenSize / uniforms.outputSize;
++    float2 physical = decoder.map_screen_to_physical_coordinates(logical);
++    return half2(clamp(physical / uniforms.physicalSize, 0.0, 1.0));
++}
++)metal";
++		NSError *error = nil;
++		g_foveatedCopyLibrary = [device newLibraryWithSource:source
++												 options:nil error:&error];
++		if (g_foveatedCopyLibrary == nil)
++		{
++			printf("[xr] foveated copy shader failed: %s\n",
++				   error.localizedDescription.UTF8String);
++			fflush(stdout);
++			return nil;
++		}
++	}
++
++	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
++	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
++	desc.fragmentFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_fragment"];
++	desc.colorAttachments[0].pixelFormat = colorFormat;
++	desc.depthAttachmentPixelFormat = depthFormat;
++	NSError *error = nil;
++	id<MTLRenderPipelineState> pipeline =
++		[device newRenderPipelineStateWithDescriptor:desc error:&error];
++	if (pipeline == nil)
++	{
++		printf("[xr] foveated copy pipeline failed: %s\n",
++			   error.localizedDescription.UTF8String);
++		fflush(stdout);
++		return nil;
++	}
++	g_foveatedCopyPipelines[key] = pipeline;
++	return pipeline;
++}
++
++static id<MTLRenderPipelineState> rateLookupPipeline(id<MTLDevice> device)
++{
++	if (g_rateLookupPipeline != nil)
++		return g_rateLookupPipeline;
++	if (g_foveatedCopyLibrary == nil
++		&& foveatedCopyPipeline(device, MTLPixelFormatBGRA8Unorm,
++			MTLPixelFormatInvalid) == nil)
++		return nil;
++
++	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
++	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
++	desc.fragmentFunction = [g_foveatedCopyLibrary
++		newFunctionWithName:@"xr_rate_lookup_fragment"];
++	desc.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
++	NSError *error = nil;
++	g_rateLookupPipeline = [device newRenderPipelineStateWithDescriptor:desc
++		error:&error];
++	if (g_rateLookupPipeline == nil)
++	{
++		printf("[xr] rate lookup pipeline failed: %s\n",
++			   error.localizedDescription.UTF8String);
++		fflush(stdout);
++	}
++	return g_rateLookupPipeline;
++}
++
++static bool updateRateLookups()
++{
++	if (g_drawable == nullptr)
++		return false;
++	auto gfx = getMetalGraphics();
++	if (gfx == nullptr)
++		return false;
++	id<MTLTexture> model = cp_drawable_get_color_texture(g_drawable, 0);
++	if (model == nil)
++		return false;
++	id<MTLRenderPipelineState> pipeline = rateLookupPipeline(model.device);
++	if (pipeline == nil)
++		return false;
++
++	constexpr NSUInteger lookupWidth = 256;
++	constexpr NSUInteger lookupHeight = 256;
++	for (int i = 0; i < 2; i++)
++	{
++		if (g_eyeRateLookups[i] != nullptr)
++			continue;
++		MTLTextureDescriptor *desc = [MTLTextureDescriptor
++			texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
++			width:lookupWidth height:lookupHeight mipmapped:NO];
++		desc.storageMode = MTLStorageModePrivate;
++		desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++		id<MTLTexture> texture = [model.device newTextureWithDescriptor:desc];
++		if (texture == nil)
++			return false;
++		g_eyeRateLookups[i] = gfx->newTextureFromHandle((__bridge void *) texture);
++	}
++
++	id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>) gfx->getCommandQueue();
++	id<MTLCommandBuffer> cmd = [queue commandBuffer];
++	size_t count = cp_drawable_get_rasterization_rate_map_count(g_drawable);
++	for (int i = 0; i < 2; i++)
++	{
++		id<MTLRasterizationRateMap> map = i < (int) count
++			? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, i) : nil;
++		id<MTLTexture> output = (__bridge id<MTLTexture>)
++			(void *) g_eyeRateLookups[i]->getHandle();
++		if (map == nil || output == nil)
++			continue;
++		MTLSizeAndAlign layout = map.parameterBufferSizeAndAlign;
++		id<MTLBuffer> data = [map.device newBufferWithLength:layout.size
++			options:MTLResourceStorageModeShared];
++		[map copyParameterDataToBuffer:data offset:0];
++
++		MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
++		pass.colorAttachments[0].texture = output;
++		pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
++		pass.colorAttachments[0].storeAction = MTLStoreActionStore;
++		id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
++		[enc setViewport:(MTLViewport){ 0, 0, (double) output.width,
++			(double) output.height, 0, 1 }];
++		[enc setRenderPipelineState:pipeline];
++		[enc setFragmentBuffer:data offset:0 atIndex:0];
++		MTLSize screen = map.screenSize;
++		MTLSize physical = [map physicalSizeForLayer:0];
++		struct {
++			simd_float2 screenSize;
++			simd_float2 physicalSize;
++			simd_float2 outputSize;
++		} uniforms = {
++			{ (float) screen.width, (float) screen.height },
++			{ (float) physical.width, (float) physical.height },
++			{ (float) output.width, (float) output.height }
++		};
++		[enc setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:1];
++		[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++		[enc endEncoding];
++	}
++	[cmd commit];
++	return true;
++}
++
++static id<MTLRenderPipelineState> foveatedResolvePipeline(id<MTLDevice> device,
++											   MTLPixelFormat colorFormat)
++{
++	uint64_t key = (uint64_t) colorFormat;
++	auto found = g_foveatedResolvePipelines.find(key);
++	if (found != g_foveatedResolvePipelines.end())
++		return found->second;
++
++	// This also creates the shared source library on first use. The returned
++	// copy pipeline is cached for submitFrame and needs no work here.
++	if (g_foveatedCopyLibrary == nil
++		&& foveatedCopyPipeline(device, colorFormat, MTLPixelFormatInvalid) == nil)
++		return nil;
++
++	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
++	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
++	desc.fragmentFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_resolve_fragment"];
++	desc.colorAttachments[0].pixelFormat = colorFormat;
++	desc.colorAttachments[1].pixelFormat = MTLPixelFormatR32Float;
++	NSError *error = nil;
++	id<MTLRenderPipelineState> pipeline =
++		[device newRenderPipelineStateWithDescriptor:desc error:&error];
++	if (pipeline == nil)
++	{
++		printf("[xr] foveated resolve pipeline failed: %s\n",
++			   error.localizedDescription.UTF8String);
++		fflush(stdout);
++		return nil;
++	}
++	g_foveatedResolvePipelines[key] = pipeline;
++	return pipeline;
 +}
 +
 +// ---------------------------------------------------------------- C entry
@@ -956,9 +1454,12 @@ index 0000000..d053c5d
 +			entry.second->release();
 +	}
 +	g_eyeTextures.clear();
++	releaseEyeRenderTargets();
 +
 +	g_frame = nullptr;
 +	g_drawable = nullptr;
++	g_eyeSources[0] = nil;
++	g_eyeSources[1] = nil;
 +	g_claimed = false;
 +	g_layer = incoming;
 +
@@ -973,7 +1474,29 @@ index 0000000..d053c5d
 +
 +extern "C" bool love_visionos_xrClaimed()
 +{
-+	return g_claimed;
++	return g_claimed.load(std::memory_order_acquire);
++}
++
++extern "C" bool love_visionos_beginHostFrame()
++{
++	if (g_claimed.load(std::memory_order_acquire))
++		return false;
++	bool expected = false;
++	if (!g_hostFrameActive.compare_exchange_strong(expected, true,
++			std::memory_order_acq_rel))
++		return false;
++	// claim may have landed between the first check and the exchange.
++	if (g_claimed.load(std::memory_order_acquire))
++	{
++		g_hostFrameActive.store(false, std::memory_order_release);
++		return false;
++	}
++	return true;
++}
++
++extern "C" void love_visionos_endHostFrame()
++{
++	g_hostFrameActive.store(false, std::memory_order_release);
 +}
 +
 +// ---------------------------------------------------------------- Lua API
@@ -1055,6 +1578,13 @@ index 0000000..d053c5d
 +		return 1;
 +	}
 +
++	// Publish ownership first, then wait for a fallback frame that may already
++	// be between queryNextFrame and queryDrawable. The old boolean poll allowed
++	// both loops into CompositorServices and aborted in cp_frame_query_drawable.
++	g_claimed.store(true, std::memory_order_release);
++	while (g_hostFrameActive.load(std::memory_order_acquire))
++		usleep(500);
++
 +	if (g_worldTracking == nullptr)
 +	{
 +		g_worldTracking = ar_world_tracking_provider_create(
@@ -1067,7 +1597,15 @@ index 0000000..d053c5d
 +		ar_session_run(g_arSession, providers);
 +	}
 +
-+	g_claimed = true;
++	// This scene measures at a stable 45 submissions/s. One repeat tells the
++	// 90 Hz compositor that cadence explicitly. The old value 2 repeated every
++	// client frame twice in addition to its first display, yielding only 30 new
++	// images/s and the visible trail on head turns.
++	cp_layer_renderer_set_minimum_frame_repeat_count(g_layer, 1);
++	// Quality values above the old ~0.52 default are valid once the layer is
++	// foveated. The final pass consumes its eye-tracked rate maps below.
++	cp_layer_renderer_set_render_quality(g_layer, 1.0f);
++
 +	printf("[xr] claim ok on %p\n", (__bridge void *) g_layer);
 +	fflush(stdout);
 +	luax_pushboolean(L, true);
@@ -1081,44 +1619,97 @@ index 0000000..d053c5d
 +	// without a present is a client error the compositor aborts on.
 +	g_frame = nullptr;
 +	g_drawable = nullptr;
++	g_eyeSources[0] = nil;
++	g_eyeSources[1] = nil;
 +	return 0;
 +}
 +
 +static int w_beginFrame(lua_State *L)
 +{
-+	if (g_layer == nullptr)
++	// Retain the bridged object locally across the timing wait. The Swift host
++	// can withdraw the global layer concurrently when the immersive space ends.
++	cp_layer_renderer_t layer = g_layer;
++	if (layer == nullptr)
 +		return 0;
 +
-+	if (cp_layer_renderer_get_state(g_layer) == cp_layer_renderer_state_paused)
-+		cp_layer_renderer_wait_until_running(g_layer);
++	if (cp_layer_renderer_get_state(layer) == cp_layer_renderer_state_paused)
++		cp_layer_renderer_wait_until_running(layer);
 +
-+	if (cp_layer_renderer_get_state(g_layer) != cp_layer_renderer_state_running)
++	if (cp_layer_renderer_get_state(layer) != cp_layer_renderer_state_running)
 +		return 0;
 +
-+	g_frame = cp_layer_renderer_query_next_frame(g_layer);
-+	if (g_frame == nullptr)
++	cp_frame_t frame = cp_layer_renderer_query_next_frame(layer);
++	if (frame == nullptr)
 +		return 0;
 +
-+	cp_frame_timing_t timing = cp_frame_predict_timing(g_frame);
++	cp_frame_timing_t timing = cp_frame_predict_timing(frame);
 +	if (timing == nullptr)
-+	{
-+		g_frame = nullptr;
 +		return 0;
-+	}
 +
-+	cp_frame_start_update(g_frame);
-+	cp_frame_end_update(g_frame);
++	cp_frame_start_update(frame);
++	cp_frame_end_update(frame);
 +
 +	cp_time_wait_until(cp_frame_timing_get_optimal_input_time(timing));
++	// The Crown can invalidate the layer during that wait. Starting submission
++	// on the now-dead frame is a deterministic EXC_BAD_ACCESS inside
++	// cp_frame_start_submission.
++	if (g_layer != layer
++		|| cp_layer_renderer_get_state(layer) != cp_layer_renderer_state_running)
++		return 0;
 +
-+	cp_frame_start_submission(g_frame);
-+	g_drawable = cp_frame_query_drawable(g_frame);
++	// xrOS 26 requires the drawable-array API for foveated layers, and the
++	// query belongs before startSubmission. Prefer the built-in display when a
++	// simultaneous capture target is also present.
++	cp_drawable_array_t drawables = cp_frame_query_drawables(frame);
++	size_t drawableCount = cp_drawable_array_get_count(drawables);
++	cp_drawable_t drawable = nullptr;
++	for (size_t i = 0; i < drawableCount; i++)
++	{
++		cp_drawable_t candidate = cp_drawable_array_get_drawable(drawables, i);
++		if (drawable == nullptr)
++			drawable = candidate;
++		if (cp_drawable_get_target(candidate) == cp_drawable_target_built_in)
++		{
++			drawable = candidate;
++			break;
++		}
++	}
++	if (drawable == nullptr)
++		return 0;
++
++	cp_frame_start_submission(frame);
++	g_frame = frame;
++	g_drawable = drawable;
++	g_eyeSources[0] = nil;
++	g_eyeSources[1] = nil;
 +	if (g_drawable == nullptr)
 +	{
 +		// Deliberately NOT ending submission: the compositor treats "ended
 +		// with nothing presented" as a client error and aborts the process.
 +		g_frame = nullptr;
 +		return 0;
++	}
++
++	static bool loggedDrawable = false;
++	if (!loggedDrawable)
++	{
++		loggedDrawable = true;
++		id<MTLTexture> color = cp_drawable_get_color_texture(g_drawable, 0);
++		size_t mapCount = cp_drawable_get_rasterization_rate_map_count(g_drawable);
++		id<MTLRasterizationRateMap> map =
++			mapCount > 0 ? cp_drawable_get_rasterization_rate_map(g_drawable, 0) : nil;
++		MTLSize screen = map != nil ? map.screenSize : MTLSizeMake(0, 0, 0);
++		MTLSize physical = map != nil ? [map physicalSizeForLayer:0]
++			: MTLSizeMake(color.width, color.height, 0);
++		printf("[xr] drawable %lux%lu, quality %.2f, repeats %d, "
++			   "foveation maps=%lu screen=%lux%lu physical=%lux%lu\n",
++			(unsigned long) color.width, (unsigned long) color.height,
++			(float) cp_layer_renderer_get_render_quality(layer),
++			cp_layer_renderer_get_minimum_frame_repeat_count(layer),
++			(unsigned long) mapCount,
++			(unsigned long) screen.width, (unsigned long) screen.height,
++			(unsigned long) physical.width, (unsigned long) physical.height);
++		fflush(stdout);
 +	}
 +
 +	CFTimeInterval presentTime =
@@ -1136,6 +1727,11 @@ index 0000000..d053c5d
 +			cp_drawable_set_device_anchor(g_drawable, anchor);
 +		}
 +	}
++
++	// This depends only on the frame's gaze map, so prepare it before LÖVE
++	// begins either eye. Water can then remap texture UVs without submitting a
++	// command buffer halfway through stereo rendering.
++	updateRateLookups();
 +
 +	lua_pushnumber(L, (lua_Number) presentTime);
 +	return 1;
@@ -1210,8 +1806,13 @@ index 0000000..d053c5d
 +		lua_setfield(L, -2, "fov");
 +
 +		id<MTLTexture> tex = cp_drawable_get_color_texture(g_drawable, i);
-+		lua_pushinteger(L, (lua_Integer) tex.width);  lua_setfield(L, -2, "w");
-+		lua_pushinteger(L, (lua_Integer) tex.height); lua_setfield(L, -2, "h");
++		id<MTLRasterizationRateMap> map =
++			i < cp_drawable_get_rasterization_rate_map_count(g_drawable)
++			? cp_drawable_get_rasterization_rate_map(g_drawable, i) : nil;
++		MTLSize screen = map != nil ? map.screenSize
++			: MTLSizeMake(tex.width, tex.height, 1);
++		lua_pushinteger(L, (lua_Integer) screen.width);  lua_setfield(L, -2, "w");
++		lua_pushinteger(L, (lua_Integer) screen.height); lua_setfield(L, -2, "h");
 +
 +		lua_rawseti(L, -2, (int) i + 1);
 +	}
@@ -1219,42 +1820,176 @@ index 0000000..d053c5d
 +	return 1;
 +}
 +
-+/**
-+ * The drawable's colour texture for one eye, as a love Texture that can be set
-+ * as a render target. Zero copies: the renderer draws where the compositor
-+ * will read.
-+ */
++/** The drawable texture as a model for the linear eye scratch allocation. */
 +static int w_eyeCanvas(lua_State *L)
 +{
 +	int index = (int) luaL_checkinteger(L, 1) - 1;
-+	if (g_drawable == nullptr || index < 0)
++	if (!ensureEyeRenderTargets(index))
 +		return 0;
++	luax_pushtype(L, g_eyeRenderColors[index]);
++	return 1;
++}
 +
-+	if ((size_t) index >= cp_drawable_get_texture_count(g_drawable))
++static int w_eyeDepth(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (!ensureEyeRenderTargets(index))
 +		return 0;
++	luax_pushtype(L, g_eyeRenderDepths[index]);
++	return 1;
++}
 +
-+	id<MTLTexture> mtl = cp_drawable_get_color_texture(g_drawable, index);
-+	if (mtl == nil)
++static int w_rateMap(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (index < 0 || index >= 2 || g_eyeRateLookups[index] == nullptr)
 +		return 0;
++	luax_pushtype(L, g_eyeRateLookups[index]);
++	return 1;
++}
 +
-+	void *key = (__bridge void *) mtl;
-+	auto it = g_eyeTextures.find(key);
-+	if (it == g_eyeTextures.end())
++static bool ensureResolvedEyeTextures(int index)
++{
++	if (!ensureEyeRenderTargets(index))
++		return false;
++	auto gfx = getMetalGraphics();
++	if (gfx == nullptr)
++		return false;
++
++	id<MTLTexture> sourceColor = (__bridge id<MTLTexture>)
++		(void *) g_eyeRenderColors[index]->getHandle();
++	bool matches = g_eyeResolvedColors[index] != nullptr
++		&& g_eyeResolvedDepths[index] != nullptr;
++	if (matches)
 +	{
-+		auto gfx = getMetalGraphics();
-+		if (gfx == nullptr)
-+			return 0;
-+
-+		love::graphics::Texture *t = nullptr;
-+		luax_catchexcept(L, [&]() { t = gfx->newTextureFromHandle(key); });
-+		if (t == nullptr)
-+			return 0;
-+
-+		g_eyeTextures[key] = t;
-+		it = g_eyeTextures.find(key);
++		id<MTLTexture> existing = (__bridge id<MTLTexture>)
++			(void *) g_eyeResolvedColors[index]->getHandle();
++		matches = existing.width == sourceColor.width
++			&& existing.height == sourceColor.height
++			&& existing.pixelFormat == sourceColor.pixelFormat;
 +	}
++	if (matches)
++		return true;
 +
-+	luax_pushtype(L, it->second);
++	if (g_eyeResolvedColors[index] != nullptr)
++		g_eyeResolvedColors[index]->release();
++	if (g_eyeResolvedDepths[index] != nullptr)
++		g_eyeResolvedDepths[index]->release();
++	g_eyeResolvedColors[index] = nullptr;
++	g_eyeResolvedDepths[index] = nullptr;
++
++	MTLTextureDescriptor *colorDesc = [MTLTextureDescriptor
++		texture2DDescriptorWithPixelFormat:sourceColor.pixelFormat
++		width:sourceColor.width height:sourceColor.height mipmapped:NO];
++	colorDesc.storageMode = MTLStorageModePrivate;
++	colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++	id<MTLTexture> color = [sourceColor.device newTextureWithDescriptor:colorDesc];
++
++	MTLTextureDescriptor *depthDesc = [MTLTextureDescriptor
++		texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
++		width:sourceColor.width height:sourceColor.height mipmapped:NO];
++	depthDesc.storageMode = MTLStorageModePrivate;
++	depthDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
++	id<MTLTexture> depth = [sourceColor.device newTextureWithDescriptor:depthDesc];
++	if (color == nil || depth == nil)
++		return false;
++
++	g_eyeResolvedColors[index] = gfx->newTextureFromHandle((__bridge void *) color);
++	g_eyeResolvedDepths[index] = gfx->newTextureFromHandle((__bridge void *) depth);
++	return g_eyeResolvedColors[index] != nullptr
++		&& g_eyeResolvedDepths[index] != nullptr;
++}
++
++/**
++ * Snapshots a foveated eye into ordinary normalized-UV color and depth
++ * textures. Screen-space effects cannot sample the packed attachments
++ * directly: a logical UV is not a physical texture UV once VRS is active.
++ */
++static int w_resolveEye(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (g_drawable == nullptr || index < 0 || index >= 2
++		|| !ensureResolvedEyeTextures(index))
++		return 0;
++
++	auto metalgfx = getMetalGraphics();
++	if (metalgfx == nullptr)
++		return 0;
++	// Finish terrain before the native pass reads its color and depth.
++	metalgfx->submitXRCommands();
++
++	id<MTLTexture> sourceColor = (__bridge id<MTLTexture>)
++		(void *) g_eyeRenderColors[index]->getHandle();
++	id<MTLTexture> sourceDepth = (__bridge id<MTLTexture>)
++		(void *) g_eyeRenderDepths[index]->getHandle();
++	id<MTLTexture> outColor = (__bridge id<MTLTexture>)
++		(void *) g_eyeResolvedColors[index]->getHandle();
++	id<MTLTexture> outDepth = (__bridge id<MTLTexture>)
++		(void *) g_eyeResolvedDepths[index]->getHandle();
++	id<MTLRasterizationRateMap> map =
++		index < (int) cp_drawable_get_rasterization_rate_map_count(g_drawable)
++			? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, index) : nil;
++	id<MTLRenderPipelineState> pipeline =
++		foveatedResolvePipeline(sourceColor.device, sourceColor.pixelFormat);
++	if (sourceDepth == nil || outColor == nil || outDepth == nil
++		|| map == nil || pipeline == nil)
++		return 0;
++
++	MTLSizeAndAlign layout = map.parameterBufferSizeAndAlign;
++	id<MTLBuffer> rateData = [map.device newBufferWithLength:layout.size
++		options:MTLResourceStorageModeShared];
++	if (rateData == nil)
++		return 0;
++	[map copyParameterDataToBuffer:rateData offset:0];
++
++	id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)
++		metalgfx->getCommandQueue();
++	id<MTLCommandBuffer> cmd = [queue commandBuffer];
++	MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
++	pass.colorAttachments[0].texture = outColor;
++	pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
++	pass.colorAttachments[0].storeAction = MTLStoreActionStore;
++	pass.colorAttachments[1].texture = outDepth;
++	pass.colorAttachments[1].loadAction = MTLLoadActionDontCare;
++	pass.colorAttachments[1].storeAction = MTLStoreActionStore;
++	id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
++	[enc setViewport:(MTLViewport){ 0, 0, (double) outColor.width,
++		(double) outColor.height, 0, 1 }];
++	[enc setRenderPipelineState:pipeline];
++	[enc setFragmentTexture:sourceColor atIndex:0];
++	[enc setFragmentTexture:sourceDepth atIndex:1];
++	[enc setFragmentBuffer:rateData offset:0 atIndex:0];
++	struct { simd_float2 screenSize; simd_float2 outputSize; } uniforms = {
++		{ (float) map.screenSize.width, (float) map.screenSize.height },
++		{ (float) outColor.width, (float) outColor.height }
++	};
++	[enc setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:1];
++	[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++	[enc endEncoding];
++	[cmd commit];
++
++	luax_pushtype(L, g_eyeResolvedColors[index]);
++	luax_pushtype(L, g_eyeResolvedDepths[index]);
++	return 2;
++}
++
++/**
++ * Records the completed linear eye image. submitFrame commits LÖVE's work,
++ * then maps this image through the drawable's current eye-tracked rate map.
++ */
++static int w_submitEye(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (g_drawable == nullptr || index < 0 || index >= 2)
++		return 0;
++
++	love::graphics::Texture *texture = love::graphics::luax_checktexture(L, 2);
++	id<MTLTexture> source = (__bridge id<MTLTexture>) (void *) texture->getHandle();
++	if (source == nil)
++		return 0;
++
++	g_eyeSources[index] = source;
++	luax_pushboolean(L, true);
 +	return 1;
 +}
 +
@@ -1263,51 +1998,131 @@ index 0000000..d053c5d
 +	if (g_frame == nullptr || g_drawable == nullptr)
 +		return 0;
 +
-+	auto gfx = getMetalGraphics();
-+	if (gfx != nullptr)
-+		gfx->flushBatchedDraws();
++	auto metalgfx = getMetalGraphics();
++	if (metalgfx != nullptr)
++		metalgfx->submitXRCommands();
 +
 +	// The compositor needs a command buffer of its own to schedule the
-+	// present against; LOVE's is already committed by the time we get here.
-+	// Device and queue are made ONCE: they were being allocated per frame,
-+	// which is ninety command queues a second for one command buffer each.
-+	static id<MTLDevice> device = nil;
-+	static id<MTLCommandQueue> queue = nil;
++	// present against. submitXRCommands above commits the eye renders first;
++	// without it this command buffer wins commit order and presents stale data.
++	// LOVE'S queue, not one of our own.
++	//
++	// Metal orders command buffers within a queue by commit order and orders
++	// nothing between queues. Presenting from a separate queue lets the
++	// compositor show a texture LOVE has not finished writing: while the head
++	// is still it looks fine, and while it turns the moving edges appear
++	// doubled, because part of the frame is the previous one. (The same fault,
++	// in the same shape, as the launcher window's flicker.)
++	id<MTLCommandQueue> queue = nil;
++	if (metalgfx != nullptr)
++		queue = (__bridge id<MTLCommandQueue>) metalgfx->getCommandQueue();
 +	if (queue == nil)
 +	{
-+		device = MTLCreateSystemDefaultDevice();
-+		queue = [device newCommandQueue];
++		// Only before the graphics module exists, which cannot happen on this
++		// path -- kept so a reordering degrades instead of crashing.
++		static id<MTLCommandQueue> fallback = nil;
++		if (fallback == nil)
++			fallback = [MTLCreateSystemDefaultDevice() newCommandQueue];
++		queue = fallback;
 +	}
 +	id<MTLCommandBuffer> cmd = [queue commandBuffer];
 +
-+	// DEPTH -- the thing this path has never written, and the only stage left
-+	// that can shrink a fully painted texture.
-+	//
-+	// CompositorServices reprojects every frame against the drawable's depth
-+	// texture. Nothing here ever wrote it, so it reprojected against whatever
-+	// was in that memory -- and a test pattern covering the ENTIRE texture
-+	// still arrives as a small patch in the middle of the eye, which no stage
-+	// before this one can explain.
-+	//
-+	// Clearing it to 0 was tried and turned the space black. That is consistent
-+	// with 0 meaning NEAR here rather than far: a frame declared to be at the
-+	// near plane reprojects straight past the viewer. So this clears to the
-+	// other end of the range. If the picture opens up, the convention was the
-+	// whole story; if it goes black again, depth is not it and the reversal
-+	// says so cleanly.
-+	size_t depthCount = cp_drawable_get_texture_count(g_drawable);
-+	for (size_t i = 0; i < depthCount; i++)
++	// Final eye pass: the scene is already in the packed foveated intermediary.
++	// This pass only changes its vertical physical orientation to the one the
++	// compositor expects; the gaze-dependent distribution itself stays intact.
++	size_t textureCount = cp_drawable_get_texture_count(g_drawable);
++	for (size_t i = 0; i < textureCount; i++)
 +	{
++		id<MTLTexture> color = cp_drawable_get_color_texture(g_drawable, i);
 +		id<MTLTexture> depth = cp_drawable_get_depth_texture(g_drawable, i);
-+		if (depth == nil)
++		if (color == nil)
 +			continue;
 +		MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-+		pass.depthAttachment.texture = depth;
-+		pass.depthAttachment.loadAction = MTLLoadActionClear;
-+		pass.depthAttachment.storeAction = MTLStoreActionStore;
-+		pass.depthAttachment.clearDepth = 1.0;
-+		id<MTLRenderCommandEncoder> enc =
-+			[cmd renderCommandEncoderWithDescriptor:pass];
++		pass.colorAttachments[0].texture = color;
++		pass.colorAttachments[0].loadAction = MTLLoadActionClear;
++		pass.colorAttachments[0].storeAction = MTLStoreActionStore;
++		pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
++		if (depth != nil)
++		{
++			pass.depthAttachment.texture = depth;
++			pass.depthAttachment.loadAction = MTLLoadActionClear;
++			pass.depthAttachment.storeAction = MTLStoreActionStore;
++			// Exactly 0 is the far clip plane and the real compositor discards
++			// the image there. 0.1 is safely inside the reverse-Z range.
++			pass.depthAttachment.clearDepth = 0.1;
++		}
++		// Deliberately no rasterizationRateMap here. The source is already a
++		// physically packed foveated image and this shader addresses physical
++		// texels. Applying the map a second time changes position.xy back into
++		// the 6888x5525 logical domain, then treating those values as 2624x2560
++		// physical coordinates bends the image around the gaze point and makes
++		// the two eyes disagree. The flipped source map is the vertical mirror
++		// of the regular destination packing, so a physical Y flip is sufficient.
++
++		id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
++		id<MTLTexture> source = i < 2 ? g_eyeSources[i] : nil;
++		id<MTLRenderPipelineState> pipeline = foveatedCopyPipeline(
++			color.device, color.pixelFormat,
++			depth != nil ? depth.pixelFormat : MTLPixelFormatInvalid);
++		if (source != nil && pipeline != nil)
++		{
++			[enc setViewport:(MTLViewport){ 0, 0, (double) color.width,
++				(double) color.height, 0, 1 }];
++			[enc setRenderPipelineState:pipeline];
++			[enc setFragmentTexture:source atIndex:0];
++
++			// Both packings, so the fragment can round-trip through logical
++			// space instead of assuming one is the other's mirror.
++			size_t rateCount = cp_drawable_get_rasterization_rate_map_count(g_drawable);
++			id<MTLRasterizationRateMap> destMap = i < (int) rateCount
++				? cp_drawable_get_rasterization_rate_map(g_drawable, i) : nil;
++			id<MTLRasterizationRateMap> srcMap = i < (int) rateCount
++				? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, i) : nil;
++			id<MTLBuffer> destData = nil, srcData = nil;
++			if (destMap != nil && srcMap != nil)
++			{
++				MTLSizeAndAlign dl = destMap.parameterBufferSizeAndAlign;
++				destData = [destMap.device newBufferWithLength:dl.size
++					options:MTLResourceStorageModeShared];
++				[destMap copyParameterDataToBuffer:destData offset:0];
++				MTLSizeAndAlign sl = srcMap.parameterBufferSizeAndAlign;
++				srcData = [srcMap.device newBufferWithLength:sl.size
++					options:MTLResourceStorageModeShared];
++				[srcMap copyParameterDataToBuffer:srcData offset:0];
++				[enc setFragmentBuffer:destData offset:0 atIndex:0];
++				[enc setFragmentBuffer:srcData offset:0 atIndex:1];
++			}
++			// TEMPORARY: the copy assumes source and destination are packed
++			// identically, so that mirroring a physical row index lands on the
++			// matching logical row. If their physical sizes differ at all, the
++			// scaling below is wrong and the error grows away from the gaze
++			// point -- which is what "only the centre looks right, the rest is
++			// bent like a sphere" looks like.
++			{
++				static bool logged = false;
++				if (!logged)
++				{
++					logged = true;
++					printf("[xr] copy: source %lux%lu -> dest %lux%lu (viewport %lux%lu)\n",
++						   (unsigned long) source.width, (unsigned long) source.height,
++						   (unsigned long) color.width, (unsigned long) color.height,
++						   (unsigned long) color.width, (unsigned long) color.height);
++					fflush(stdout);
++				}
++			}
++			struct {
++				simd_float2 invPhysical;
++				simd_float2 screenSize;
++			} copyUniforms;
++			copyUniforms.invPhysical = (simd_float2){ 1.0f / source.width,
++													 1.0f / source.height };
++			MTLSize screenSize = destMap != nil ? destMap.screenSize
++											    : (MTLSize){ source.width, source.height, 1 };
++			copyUniforms.screenSize = (simd_float2){ (float) screenSize.width,
++													(float) screenSize.height };
++			[enc setFragmentBytes:&copyUniforms length:sizeof(copyUniforms) atIndex:2];
++			[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++		}
 +		[enc endEncoding];
 +	}
 +
@@ -1316,11 +2131,54 @@ index 0000000..d053c5d
 +
 +	cp_frame_end_submission(g_frame);
 +
++	// The rate we actually achieve, once a second. If it sits near the display
++	// cadence the frame loop is healthy; if it
++	// wanders, the scene is simply too heavy and the fix is the renderer.
++	{
++		static int frames = 0;
++		static CFTimeInterval last = 0;
++		frames++;
++		CFTimeInterval now = CACurrentMediaTime();
++		if (last == 0) last = now;
++		if (now - last >= 1.0)
++		{
++			printf("[xr] %.1f submitted fps\n", frames / (now - last));
++			fflush(stdout);
++			frames = 0;
++			last = now;
++		}
++	}
++
 +	g_frame = nullptr;
 +	g_drawable = nullptr;
++	g_eyeSources[0] = nil;
++	g_eyeSources[1] = nil;
 +
 +	luax_pushboolean(L, true);
 +	return 1;
++}
++
++// The PHYSICAL size of this eye's packed attachments.
++//
++// LOVE is told the logical size (that is what makes the scene render at full
++// logical resolution), so nothing in Lua can discover the real one -- and a
++// screen-space pass needs it. Under variable rasterization a fragment's
++// coordinate is physical while love_ScreenSize reports the logical size, so
++// dividing one by the other yields a UV that only reaches physical/logical of
++// the way across. That is roughly 0.38 here, and it is why the water tested
++// its depth against the wrong corner of the frame.
++static int w_eyePhysicalSize(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (index < 0 || index >= 2 || !ensureEyeRenderTargets(index))
++		return 0;
++	id<MTLTexture> tex = (__bridge id<MTLTexture>)
++		(void *) g_eyeRenderColors[index]->getHandle();
++	if (tex == nil)
++		return 0;
++	lua_pushinteger(L, (lua_Integer) tex.width);
++	lua_pushinteger(L, (lua_Integer) tex.height);
++	return 2;
 +}
 +
 +static const luaL_Reg functions[] =
@@ -1333,6 +2191,11 @@ index 0000000..d053c5d
 +	{ "beginFrame",  w_beginFrame  },
 +	{ "views",       w_views       },
 +	{ "eyeCanvas",   w_eyeCanvas   },
++	{ "eyeDepth",    w_eyeDepth    },
++	{ "rateMap",     w_rateMap     },
++	{ "eyePhysicalSize", w_eyePhysicalSize },
++	{ "resolveEye",  w_resolveEye  },
++	{ "submitEye",   w_submitEye   },
 +	{ "submitFrame", w_submitFrame },
 +	{ 0, 0 }
 +};

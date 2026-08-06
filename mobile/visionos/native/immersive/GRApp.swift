@@ -66,13 +66,25 @@ struct GRImmersiveContent: CompositorContent {
 struct GRLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
-        // Foveation off deliberately. A variable rasterization rate map warps
-        // screen space, and the voxel mod's water ray march, sky dither grid
-        // and tilt-shift pass all reason in screen pixels -- enabling it means
-        // fixing those three first. Revisit once the port renders correctly.
-        configuration.isFoveationEnabled = false
+        // Higher drawable quality on Vision Pro requires foveation. The voxel
+        // scene itself stays in a conventional linear scratch image; love.xr's
+        // final Metal pass applies the drawable's eye-tracked rate map, so the
+        // screen-space water and sky shaders never see warped coordinates.
+        let foveated = capabilities.supportsFoveation
+        configuration.isFoveationEnabled = foveated
+        if foveated {
+            configuration.maxRenderQuality = LayerRenderer.RenderQuality(rawValue: 1.0)
+            // LÖVE's canvas convention is vertically opposite Metal's final
+            // drawable convention. The scene uses the flipped map in its
+            // intermediary targets; the native final pass uses the regular.
+            configuration.generateFlippedRasterizationRateMaps = true
+        }
+        print("[xr] layer defaults: quality \(capabilities.defaultRenderQuality.rawValue), "
+              + "minimumNear \(capabilities.supportedMinimumNearPlaneDistance)m")
 
-        let supported = capabilities.supportedLayouts(options: [])
+        let layoutOptions: LayerRenderer.Capabilities.SupportedLayoutsOptions =
+            foveated ? [.foveationEnabled] : []
+        let supported = capabilities.supportedLayouts(options: layoutOptions)
         // `dedicated` gives one plain 2D texture per eye, which is exactly the
         // shape VoxelScene's existing two-canvas stereo path already produces.
         // `shared` would hand back one double-wide texture, and every pass in
