@@ -117,5 +117,19 @@ struct GRApp: App {
             GRImmersiveContent(model: model)
         }
         .immersionStyle(selection: .constant(.full), in: .full)
+        // Hides the system's own overlays over this space -- the Home
+        // indicator and the affordance a look-up-and-pinch opens Control
+        // Centre with.
+        //
+        // It does NOT disable the gestures themselves, and nothing can: the
+        // Digital Crown and the look-up pinch are how a person leaves an app
+        // that has gone wrong, so visionOS reserves them and offers no key or
+        // API to take them away. What this buys is that the affordance is not
+        // sitting in the view inviting the pinch; what it cannot buy is a
+        // pinch aimed at where it used to be.
+        //
+        // So if a gesture of ours collides with one of theirs, ours has to
+        // move. The fist is the likely one.
+        .persistentSystemOverlays(.hidden)
     }
 }

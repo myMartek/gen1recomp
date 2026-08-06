@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..673a4aa
+index 0000000..6562b70
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,1322 @@
+@@ -0,0 +1,1555 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -950,6 +950,10 @@ index 0000000..673a4aa
 +static cp_layer_renderer_t g_layer = nullptr;
 +static ar_session_t g_arSession = nullptr;
 +static ar_world_tracking_provider_t g_worldTracking = nullptr;
++static ar_hand_tracking_provider_t g_handTracking = nullptr;
++// Reused across frames: get_latest_anchors FILLS anchors you hand it rather
++// than returning new ones, so allocating a pair per frame would be waste.
++static ar_hand_anchor_t g_handAnchors[2] = { nullptr, nullptr };
 +
 +// Set while Lua owns the frame loop. The host's own renderer polls this and
 +// stands down: two loops calling cp_frame_* on one layer would be a race, and
@@ -1593,7 +1597,39 @@ index 0000000..673a4aa
 +		ar_data_providers_t providers = ar_data_providers_create();
 +		ar_data_providers_add_data_provider(providers, g_worldTracking);
 +
++		// Hands, where the device offers them. Not fatal if it does not: the
++		// pad path is unaffected and love.xr.hands simply reports nothing.
++		if (ar_hand_tracking_provider_is_supported())
++		{
++			g_handTracking = ar_hand_tracking_provider_create(
++				ar_hand_tracking_configuration_create());
++			ar_data_providers_add_data_provider(providers, g_handTracking);
++			g_handAnchors[0] = ar_hand_anchor_create();
++			g_handAnchors[1] = ar_hand_anchor_create();
++		}
++
 +		g_arSession = ar_session_create();
++
++		// ASK FIRST. ar_session_run does not request authorization -- it just
++		// runs, and a provider whose permission was never granted produces
++		// nothing at all, silently. No prompt ever appeared and the hands
++		// simply did not respond.
++		//
++		// World sensing is requested alongside: it happens to be granted
++		// already because opening an immersive space asks for it, but relying
++		// on that is relying on a side effect.
++		ar_authorization_type_t wanted = ar_authorization_type_world_sensing;
++		if (g_handTracking != nullptr)
++			wanted = (ar_authorization_type_t)
++				(wanted | ar_authorization_type_hand_tracking);
++		ar_session_request_authorization(g_arSession, wanted,
++			^(ar_authorization_results_t results, ar_error_t error) {
++				(void) results;
++				printf("[xr] authorization returned%s\n",
++					   error != nullptr ? " with an error" : "");
++				fflush(stdout);
++			});
++
 +		ar_session_run(g_arSession, providers);
 +	}
 +
@@ -2181,6 +2217,201 @@ index 0000000..673a4aa
 +	return 2;
 +}
 +
++// The flat frame, as a Texture Lua can draw with.
++//
++// On visionOS LOVE renders headless into an offscreen "virtual screen", so the
++// 2D UI the game draws every frame -- menus, dialogs, the battle screen -- is
++// already sitting in a texture. OpenXR's path reads it back out of the window's
++// front buffer with raw GL, which does not exist here and would be a copy
++// besides. This hands the texture over directly.
++//
++// Cached like the eye textures: it is created once in setMode and never
++// replaced, and handing Lua a new object each frame would make every canvas
++// cache downstream rebuild itself.
++static love::graphics::Texture *g_screenTexture = nullptr;
++
++static int w_screenTexture(lua_State *L)
++{
++	auto gfx = getMetalGraphics();
++	if (gfx == nullptr)
++		return 0;
++
++	if (g_screenTexture == nullptr)
++	{
++		void *handle = gfx->getVirtualScreenTexture();
++		if (handle == nullptr)
++			return 0;
++		love::graphics::Texture *t = nullptr;
++		luax_catchexcept(L, [&]() { t = gfx->newTextureFromHandle(handle); });
++		if (t == nullptr)
++			return 0;
++		g_screenTexture = t;
++	}
++
++	luax_pushtype(L, g_screenTexture);
++	return 1;
++}
++
++// ---------------------------------------------------------------- hands
++
++// Distance between two named joints, in metres, or a negative number when
++// either is missing. Joint transforms are ANCHOR-relative, so a distance
++// between two of them needs no world conversion -- and is the same number
++// wherever the hand happens to be.
++static float jointGap(ar_hand_skeleton_t skel,
++                      ar_hand_skeleton_joint_name_t a,
++                      ar_hand_skeleton_joint_name_t b)
++{
++	if (skel == nullptr)
++		return -1.0f;
++	ar_skeleton_joint_t ja = ar_hand_skeleton_get_joint_named(skel, a);
++	ar_skeleton_joint_t jb = ar_hand_skeleton_get_joint_named(skel, b);
++	if (ja == nullptr || jb == nullptr)
++		return -1.0f;
++	simd_float4 pa = ar_skeleton_joint_get_anchor_from_joint_transform(ja).columns[3];
++	simd_float4 pb = ar_skeleton_joint_get_anchor_from_joint_transform(jb).columns[3];
++	return simd_length(simd_make_float3(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z));
++}
++
++// A pinch is the tips touching. 25 mm is generous on purpose: the tracker's
++// tip estimate wanders a few millimetres, and a threshold tight enough to feel
++// precise is one that drops the gesture mid-hold.
++// The position of a named joint, in ANCHOR space.
++static bool jointPos(ar_hand_skeleton_t skel,
++                     ar_hand_skeleton_joint_name_t name,
++                     simd_float3 *out)
++{
++	if (skel == nullptr)
++		return false;
++	ar_skeleton_joint_t j = ar_hand_skeleton_get_joint_named(skel, name);
++	if (j == nullptr)
++		return false;
++	simd_float4 p = ar_skeleton_joint_get_anchor_from_joint_transform(j).columns[3];
++	*out = simd_make_float3(p.x, p.y, p.z);
++	return true;
++}
++
++// The palm's middle, in ANCHOR space -- a POSITION correction only.
++//
++// ARKit's hand anchor sits at the wrist, so the pokedex hung halfway up the
++// forearm; the mod's offsets are tuned against OpenXR's grip pose, which is in
++// the palm. This moves the origin there and changes nothing else.
++//
++// A full basis derived from knuckle positions was tried and was worse. The
++// anchor's own rotation follows the arm cleanly, and a hand-built one does not
++// -- it is only as steady as four joint estimates, and it inherits their
++// jitter. Whatever is left wrong about the ORIENTATION is a fixed rotation,
++// and a fixed rotation belongs in lib/Pokedex.lua's TILT beside the offsets it
++// was tuned with, where it can be changed without rebuilding the engine.
++static bool palmCentre(ar_hand_skeleton_t skel, simd_float4x4 *out)
++{
++	simd_float3 wrist, midKnuckle;
++	if (!jointPos(skel, ar_hand_skeleton_joint_name_wrist, &wrist)
++		|| !jointPos(skel, ar_hand_skeleton_joint_name_middle_finger_knuckle, &midKnuckle))
++		return false;
++	simd_float3 origin = (wrist + midKnuckle) * 0.5f;
++	simd_float4x4 m = matrix_identity_float4x4;
++	m.columns[3] = simd_make_float4(origin.x, origin.y, origin.z, 1.0f);
++	*out = m;
++	return true;
++}
++
++static const float PINCH_GAP = 0.025f;
++// A closed hand, measured as the fingertips folded back to the wrist. An open
++// hand puts them 0.16-0.18 m out, a fist about 0.07 -- so this sits well clear
++// of both.
++static const float FIST_GAP = 0.10f;
++
++/**
++ * The hands, as gestures rather than skeletons.
++ *
++ * Lua gets what it can act on -- a pose and a handful of booleans -- and not
++ * twenty-seven joints it would have to do trigonometry on. The thresholds live
++ * here beside the measurements they came from.
++ */
++static int w_hands(lua_State *L)
++{
++	lua_createtable(L, 2, 0);
++	if (g_handTracking == nullptr)
++		return 1;
++
++	ar_hand_tracking_provider_get_latest_anchors(g_handTracking,
++												 g_handAnchors[0],
++												 g_handAnchors[1]);
++
++	for (int i = 0; i < 2; i++)
++	{
++		lua_createtable(L, 0, 6);
++		ar_hand_anchor_t anchor = g_handAnchors[i];
++		bool tracked = anchor != nullptr && ar_hand_anchor_is_tracked(anchor);
++
++		lua_pushboolean(L, tracked);
++		lua_setfield(L, -2, "tracked");
++
++		if (tracked)
++		{
++			// Recentred exactly as the head is: the rig reads these in the
++			// same space it reads the eyes in, or the pokedex would hang a
++			// metre off the hand holding it.
++			ar_hand_skeleton_t skel = ar_hand_anchor_get_hand_skeleton(anchor);
++			simd_float4x4 anchorFromGrip = matrix_identity_float4x4;
++			simd_float4x4 originFromAnchor =
++				ar_hand_anchor_get_origin_from_anchor_transform(anchor);
++			// The palm where the skeleton allows it; the bare anchor is the
++			// fallback, and it is the wrist.
++			if (!palmCentre(skel, &anchorFromGrip))
++				anchorFromGrip = matrix_identity_float4x4;
++			simd_float4x4 world = simd_mul(g_rigFromOrigin,
++				simd_mul(originFromAnchor, anchorFromGrip));
++			simd_float4 pos = world.columns[3];
++			simd_quatf q = simd_quaternion(world);
++
++			lua_createtable(L, 0, 2);
++			lua_createtable(L, 3, 0);
++			lua_pushnumber(L, pos.x); lua_rawseti(L, -2, 1);
++			lua_pushnumber(L, pos.y); lua_rawseti(L, -2, 2);
++			lua_pushnumber(L, pos.z); lua_rawseti(L, -2, 3);
++			lua_setfield(L, -2, "pos");
++			lua_createtable(L, 4, 0);
++			lua_pushnumber(L, q.vector.x); lua_rawseti(L, -2, 1);
++			lua_pushnumber(L, q.vector.y); lua_rawseti(L, -2, 2);
++			lua_pushnumber(L, q.vector.z); lua_rawseti(L, -2, 3);
++			lua_pushnumber(L, q.vector.w); lua_rawseti(L, -2, 4);
++			lua_setfield(L, -2, "quat");
++			lua_setfield(L, -2, "pose");
++
++			float indexGap = jointGap(skel,
++				ar_hand_skeleton_joint_name_thumb_tip,
++				ar_hand_skeleton_joint_name_index_finger_tip);
++			float middleGap = jointGap(skel,
++				ar_hand_skeleton_joint_name_thumb_tip,
++				ar_hand_skeleton_joint_name_middle_finger_tip);
++
++			lua_pushboolean(L, indexGap >= 0 && indexGap < PINCH_GAP);
++			lua_setfield(L, -2, "pinchIndex");
++			lua_pushboolean(L, middleGap >= 0 && middleGap < PINCH_GAP);
++			lua_setfield(L, -2, "pinchMiddle");
++
++			// A fist: the three long fingers folded to the wrist together.
++			// Testing all three keeps a pointing hand or a pinch from
++			// counting -- one finger down is not a fist.
++			float w1 = jointGap(skel, ar_hand_skeleton_joint_name_wrist,
++				ar_hand_skeleton_joint_name_index_finger_tip);
++			float w2 = jointGap(skel, ar_hand_skeleton_joint_name_wrist,
++				ar_hand_skeleton_joint_name_middle_finger_tip);
++			float w3 = jointGap(skel, ar_hand_skeleton_joint_name_wrist,
++				ar_hand_skeleton_joint_name_ring_finger_tip);
++			bool fist = w1 >= 0 && w2 >= 0 && w3 >= 0
++					 && w1 < FIST_GAP && w2 < FIST_GAP && w3 < FIST_GAP;
++			lua_pushboolean(L, fist);
++			lua_setfield(L, -2, "fist");
++		}
++
++		lua_rawseti(L, -2, i + 1);
++	}
++	return 1;
++}
++
 +static const luaL_Reg functions[] =
 +{
 +	{ "available",   w_available   },
@@ -2191,8 +2422,10 @@ index 0000000..673a4aa
 +	{ "beginFrame",  w_beginFrame  },
 +	{ "views",       w_views       },
 +	{ "eyeCanvas",   w_eyeCanvas   },
++	{ "screenTexture", w_screenTexture },
 +	{ "eyeDepth",    w_eyeDepth    },
 +	{ "rateMap",     w_rateMap     },
++	{ "hands",       w_hands       },
 +	{ "eyePhysicalSize", w_eyePhysicalSize },
 +	{ "resolveEye",  w_resolveEye  },
 +	{ "submitEye",   w_submitEye   },

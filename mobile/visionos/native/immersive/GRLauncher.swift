@@ -55,6 +55,9 @@ struct GRLauncherView: View {
             // presentation is showing: both the window and the immersive space
             // consume the same virtual screen, so neither owns its lifetime.
             GRLove.bootOnce()
+            // Before anything needs them, so the prompt lands on the launcher
+            // rather than over the game.
+            GRLove.requestTrackingAuthorization()
             pads.start()
             shell.start()
 

@@ -6,6 +6,7 @@
 //  it onto in-world geometry (CompositorServices has no equivalent of the
 //  OpenXR quad layer the mod uses for menus on Windows).
 
+import ARKit
 import Foundation
 import Metal
 import os
@@ -61,6 +62,30 @@ enum GRLove {
         guard let raw = love_visionos_virtualScreenTexture() else { return nil }
         cachedScreen = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue() as? MTLTexture
         return cachedScreen
+    }
+
+    /// Asks for hand tracking and world sensing, once, at app start.
+    ///
+    /// ARKit grants nothing implicitly: ar_session_run starts a provider
+    /// whether or not its permission exists, and an unauthorised one simply
+    /// produces no anchors -- no error, no prompt, no hands.
+    ///
+    /// At START rather than when the game claims the frame loop, which is
+    /// where it first sat. Asking mid-session puts a system dialog over the
+    /// world the moment someone turns VR on, and a reflexive dismissal
+    /// disables hand tracking for the rest of the run. Asking here costs one
+    /// prompt on first launch and nothing afterwards.
+    ///
+    /// The session is temporary on purpose: authorization belongs to the app,
+    /// not to the session that asked, so love.xr's own session inherits it.
+    static func requestTrackingAuthorization() {
+        Task.detached(priority: .utility) {
+            let session = ARKitSession()
+            let results = await session.requestAuthorization(for: [.handTracking, .worldSensing])
+            for (type, status) in results {
+                log.notice("ARKit authorization \(String(describing: type), privacy: .public): \(String(describing: status), privacy: .public)")
+            }
+        }
     }
 
     /// LÖVE's Metal command queue.
