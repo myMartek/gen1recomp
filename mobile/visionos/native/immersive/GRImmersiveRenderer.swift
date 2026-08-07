@@ -250,9 +250,12 @@ final class GRImmersiveRenderer {
             pass.colorAttachments[0].slice = layered ? index : 0
             pass.colorAttachments[0].loadAction = .clear
             pass.colorAttachments[0].storeAction = .store
-            // Near-black rather than magenta now that there is real content:
-            // this is the room around the panel, and it should not glow.
-            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.02, green: 0.02, blue: 0.04, alpha: 1.0)
+            // Black. This was magenta while "no frame yet" needed to be
+            // unmistakable, then a near-black with a little blue in it -- and
+            // that little blue is visible: it draws a faint lit rectangle
+            // around the panel in a room that is otherwise off. Nothing is
+            // gained by not being black here.
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1.0)
 
             // The depth attachment is NOT optional. A drawable carries one per
             // view and the compositor reprojects against it; submitting a frame

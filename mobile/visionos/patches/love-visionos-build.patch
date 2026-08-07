@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..6562b70
+index 0000000..e1dd067
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,1555 @@
+@@ -0,0 +1,1593 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -1558,12 +1558,73 @@ index 0000000..6562b70
 + * be to the moment the frame is actually shown.
 + */
 +/**
-+ * Takes the frame loop from the host and brings world tracking up.
++ * Brings world and hand tracking up, once.
 + *
 + * ARKit is started here rather than passed in from the host: its C API is
 + * available, and a provider created on the far side of a language boundary
 + * would have to be handed over as an opaque pointer with a lifetime nobody
 + * owns clearly.
++ *
++ * Deliberately independent of the compositor layer. This used to live inside
++ * claim(), which tied the hands to the game owning the frame loop: in the flat
++ * window, and inside the space with the mod's VR row still off, hands() found
++ * a null provider and reported nothing at all. Tracking is not a property of
++ * the frame loop and should not have been gated on it.
++ *
++ * Whether visionOS actually DELIVERS anchors outside an immersive space is a
++ * separate question, and one the SDK headers do not answer -- so the provider
++ * state is logged on the first hands() call after startup and the device gets
++ * to answer it.
++ */
++static void ensureARSession(void)
++{
++	if (g_worldTracking != nullptr)
++		return;
++
++	g_worldTracking = ar_world_tracking_provider_create(
++		ar_world_tracking_configuration_create());
++
++	ar_data_providers_t providers = ar_data_providers_create();
++	ar_data_providers_add_data_provider(providers, g_worldTracking);
++
++	// Hands, where the device offers them. Not fatal if it does not: the
++	// pad path is unaffected and love.xr.hands simply reports nothing.
++	if (ar_hand_tracking_provider_is_supported())
++	{
++		g_handTracking = ar_hand_tracking_provider_create(
++			ar_hand_tracking_configuration_create());
++		ar_data_providers_add_data_provider(providers, g_handTracking);
++		g_handAnchors[0] = ar_hand_anchor_create();
++		g_handAnchors[1] = ar_hand_anchor_create();
++	}
++
++	g_arSession = ar_session_create();
++
++	// ASK FIRST. ar_session_run does not request authorization -- it just
++	// runs, and a provider whose permission was never granted produces
++	// nothing at all, silently. No prompt ever appeared and the hands
++	// simply did not respond.
++	//
++	// World sensing is requested alongside: it happens to be granted
++	// already because opening an immersive space asks for it, but relying
++	// on that is relying on a side effect.
++	ar_authorization_type_t wanted = ar_authorization_type_world_sensing;
++	if (g_handTracking != nullptr)
++		wanted = (ar_authorization_type_t)
++			(wanted | ar_authorization_type_hand_tracking);
++	ar_session_request_authorization(g_arSession, wanted,
++		^(ar_authorization_results_t results, ar_error_t error) {
++			(void) results;
++			printf("[xr] authorization returned%s\n",
++				   error != nullptr ? " with an error" : "");
++			fflush(stdout);
++		});
++
++	ar_session_run(g_arSession, providers);
++}
++
++/**
++ * Takes the frame loop from the host.
 + */
 +static int w_claim(lua_State *L)
 +{
@@ -1589,49 +1650,7 @@ index 0000000..6562b70
 +	while (g_hostFrameActive.load(std::memory_order_acquire))
 +		usleep(500);
 +
-+	if (g_worldTracking == nullptr)
-+	{
-+		g_worldTracking = ar_world_tracking_provider_create(
-+			ar_world_tracking_configuration_create());
-+
-+		ar_data_providers_t providers = ar_data_providers_create();
-+		ar_data_providers_add_data_provider(providers, g_worldTracking);
-+
-+		// Hands, where the device offers them. Not fatal if it does not: the
-+		// pad path is unaffected and love.xr.hands simply reports nothing.
-+		if (ar_hand_tracking_provider_is_supported())
-+		{
-+			g_handTracking = ar_hand_tracking_provider_create(
-+				ar_hand_tracking_configuration_create());
-+			ar_data_providers_add_data_provider(providers, g_handTracking);
-+			g_handAnchors[0] = ar_hand_anchor_create();
-+			g_handAnchors[1] = ar_hand_anchor_create();
-+		}
-+
-+		g_arSession = ar_session_create();
-+
-+		// ASK FIRST. ar_session_run does not request authorization -- it just
-+		// runs, and a provider whose permission was never granted produces
-+		// nothing at all, silently. No prompt ever appeared and the hands
-+		// simply did not respond.
-+		//
-+		// World sensing is requested alongside: it happens to be granted
-+		// already because opening an immersive space asks for it, but relying
-+		// on that is relying on a side effect.
-+		ar_authorization_type_t wanted = ar_authorization_type_world_sensing;
-+		if (g_handTracking != nullptr)
-+			wanted = (ar_authorization_type_t)
-+				(wanted | ar_authorization_type_hand_tracking);
-+		ar_session_request_authorization(g_arSession, wanted,
-+			^(ar_authorization_results_t results, ar_error_t error) {
-+				(void) results;
-+				printf("[xr] authorization returned%s\n",
-+					   error != nullptr ? " with an error" : "");
-+				fflush(stdout);
-+			});
-+
-+		ar_session_run(g_arSession, providers);
-+	}
++	ensureARSession();
 +
 +	// This scene measures at a stable 45 submissions/s. One repeat tells the
 +	// 90 Hz compositor that cadence explicitly. The old value 2 repeated every
@@ -2331,9 +2350,28 @@ index 0000000..6562b70
 + */
 +static int w_hands(lua_State *L)
 +{
++	// Tracking does not belong to the frame loop, so asking for hands is
++	// enough to start it -- the flat window and an unclaimed space both get
++	// here without ever calling claim().
++	ensureARSession();
++
 +	lua_createtable(L, 2, 0);
 +	if (g_handTracking == nullptr)
 +		return 1;
++
++	// Once per run, and only once: whether the provider is RUNNING outside an
++	// immersive space is the whole question behind "the hands do nothing in
++	// the flat window", and it is not answerable from the SDK headers. A
++	// provider that is paused or stopped here is visionOS declining, not a
++	// bug above this line.
++	static bool reported = false;
++	if (!reported)
++	{
++		reported = true;
++		printf("[xr] hand provider state=%d (1=running)\n",
++			   (int) ar_data_provider_get_state(g_handTracking));
++		fflush(stdout);
++	}
 +
 +	ar_hand_tracking_provider_get_latest_anchors(g_handTracking,
 +												 g_handAnchors[0],
