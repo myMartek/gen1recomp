@@ -66,11 +66,30 @@ struct GRImmersiveContent: CompositorContent {
 struct GRLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
-        // Higher drawable quality on Vision Pro requires foveation. The voxel
-        // scene itself stays in a conventional linear scratch image; love.xr's
-        // final Metal pass applies the drawable's eye-tracked rate map, so the
-        // screen-space water and sky shaders never see warped coordinates.
-        let foveated = capabilities.supportsFoveation
+        // FOVEATION IS OFF, on purpose and for now.
+        //
+        // It buys drawable quality -- render quality above the default is only
+        // permitted on a foveated layer -- and it costs a coordinate system:
+        // the eye textures then hold a non-uniformly packed image whose dense
+        // region follows the gaze, and every shader that addresses the frame
+        // by screen position has to convert. The water's screen-space
+        // reflection is exactly such a shader, it is the one thing that has
+        // never worked in the headset while working in the window, and two
+        // attempts at the conversion changed nothing.
+        //
+        // Off, the eye texture is an ordinary image and the water shader runs
+        // the same path the flat screen runs. If the reflections come back,
+        // the packing was the fault and this is where the real fix belongs.
+        // OFF. Foveation buys render quality above the default and costs a
+        // coordinate system: the eye texture then holds a gaze-packed image,
+        // and every pass that addresses the frame by screen position has to
+        // decode it. The water's screen-space reflection is such a pass, and
+        // it is the one thing that has never been right in the headset while
+        // being right in the window.
+        //
+        // The renderer now has both paths -- see kFoveated in wrap_XR.mm --
+        // so this is a one-line choice rather than a black space.
+        let foveated = false && capabilities.supportsFoveation
         configuration.isFoveationEnabled = foveated
         if foveated {
             configuration.maxRenderQuality = LayerRenderer.RenderQuality(rawValue: 1.0)

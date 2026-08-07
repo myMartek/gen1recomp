@@ -370,48 +370,88 @@ end
 function love.gamepadpressed(joystick, button)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:gamepadpressed(joystick, button) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:gamepadpressed(joystick, button)
 end
 
 function love.gamepadreleased(joystick, button)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:gamepadreleased(joystick, button) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:gamepadreleased(joystick, button)
 end
 
 function love.gamepadaxis(joystick, axis, value)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:gamepadaxis(joystick, axis, value) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:gamepadaxis(joystick, axis, value)
 end
 
 function love.joystickpressed(joystick, button)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickpressed(joystick, button) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:joystickpressed(joystick, button)
 end
 
 function love.joystickreleased(joystick, button)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickreleased(joystick, button) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:joystickreleased(joystick, button)
 end
 
 function love.joystickaxis(joystick, axis, value)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickaxis(joystick, axis, value) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:joystickaxis(joystick, axis, value)
 end
 
 function love.joystickhat(joystick, hat, direction)
   if editorMode or TouchEditor then return end
   if Importer then return Importer:joystickhat(joystick, hat, direction) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:joystickhat(joystick, hat, direction)
 end
 
 function love.joystickremoved(joystick)
   if editorMode or TouchEditor then return end
   if Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end and a pad can be plugged,
+  -- unplugged or re-enumerated while it is up -- which is exactly what
+  -- declaring the SpatialGamepad profile makes the Sense pair do.
+  if not Game then return end
   Game:joystickremoved(joystick)
 end
 

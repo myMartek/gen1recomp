@@ -59,12 +59,19 @@
 	</dict>
 
 	<!-- ExtendedGamepad covers the DualSense (GCDualSenseGamepad conforms to
-	     GCExtendedGamepad). There is deliberately no spatial entry here: the
-	     PSVR2 Sense pair identifies at runtime via
-	     GCDevice.productCategory == GCProductCategorySpatialController, which
-	     is a category, not a GCSupportedGameControllers ProfileName, and their
-	     6DoF poses come from ARKit's accessory tracking rather than from
-	     GameController at all. -->
+	     GCExtendedGamepad).
+
+	     SpatialGamepad is what makes the PSVR2 Sense pair reachable at all.
+	     A single Sense controller cannot offer a whole gamepad profile, and
+	     GameController only enumerates devices that can -- so without this
+	     entry the pair arrives as ONE coalesced MFi gamepad that ARKit cannot
+	     track. Declared, the two also appear separately, as GCSpatialAccessory
+	     (visionOS 27) or with productCategory GCProductCategorySpatialController,
+	     which is what ar_accessory_load_from_device needs.
+
+	     Both stay listed: the coalesced gamepad is what SDL enumerates and
+	     what drives the buttons and the sticks. Only the 6DoF poses come from
+	     ARKit's accessory tracking. -->
 	<!--
 		True, as in the build where the controller actually drove the game.
 		Setting it false was an attempt to stop SwiftUI's focus ring competing
@@ -79,6 +86,10 @@
 		<dict>
 			<key>ProfileName</key>
 			<string>ExtendedGamepad</string>
+		</dict>
+		<dict>
+			<key>ProfileName</key>
+			<string>SpatialGamepad</string>
 		</dict>
 	</array>
 

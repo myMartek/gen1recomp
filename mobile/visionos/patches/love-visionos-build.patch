@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..e1dd067
+index 0000000..c29c1bf
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,1593 @@
+@@ -0,0 +1,2017 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -933,6 +933,7 @@ index 0000000..e1dd067
 +
 +#import <ARKit/ARKit.h>
 +#import <CompositorServices/CompositorServices.h>
++#import <GameController/GameController.h>
 +#import <Metal/Metal.h>
 +#import <simd/simd.h>
 +
@@ -1081,9 +1082,14 @@ index 0000000..e1dd067
 +	size_t mapCount = cp_drawable_get_rasterization_rate_map_count(g_drawable);
 +	id<MTLRasterizationRateMap> map = index < (int) mapCount
 +		? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, index) : nil;
-+	if (drawableColor == nil || map == nil)
++	if (drawableColor == nil)
 +		return false;
-+	MTLSize screen = map.screenSize;
++	// No map means no packing: the logical eye IS the texture. Bailing out
++	// here was why switching foveation off produced a black space -- the eye
++	// render targets were never created, so nothing was ever drawn.
++	MTLSize screen = (map != nil)
++		? map.screenSize
++		: MTLSizeMake(drawableColor.width, drawableColor.height, 1);
 +
 +	bool matches = g_eyeRenderColors[index] != nullptr
 +		&& g_eyeRenderDepths[index] != nullptr
@@ -1147,11 +1153,35 @@ index 0000000..e1dd067
 +static std::map<uint64_t, id<MTLRenderPipelineState>> g_foveatedResolvePipelines;
 +static id<MTLRenderPipelineState> g_rateLookupPipeline = nil;
 +
++// A fragment function specialised for the foveation constant.
++//
++// Metal will not let a function constant go unset when the shader declares
++// one, so every fragment here is fetched through this rather than by name.
++static id<MTLFunction> specialisedFragment(NSString *name, bool foveated)
++{
++	if (g_foveatedCopyLibrary == nil)
++		return nil;
++	MTLFunctionConstantValues *values = [MTLFunctionConstantValues new];
++	[values setConstantValue:&foveated type:MTLDataTypeBool atIndex:0];
++	NSError *error = nil;
++	id<MTLFunction> fn = [g_foveatedCopyLibrary newFunctionWithName:name
++		constantValues:values error:&error];
++	if (fn == nil)
++	{
++		printf("[xr] %s (foveated=%d) failed: %s\n", name.UTF8String,
++			   (int) foveated, error.localizedDescription.UTF8String);
++		fflush(stdout);
++	}
++	return fn;
++}
++
 +static id<MTLRenderPipelineState> foveatedCopyPipeline(id<MTLDevice> device,
 +											   MTLPixelFormat colorFormat,
-+											   MTLPixelFormat depthFormat)
++											   MTLPixelFormat depthFormat,
++											   bool foveated)
 +{
 +	uint64_t key = ((uint64_t) colorFormat << 32) | (uint32_t) depthFormat;
++	key = (key << 1) | (foveated ? 1 : 0);
 +	auto found = g_foveatedCopyPipelines.find(key);
 +	if (found != g_foveatedCopyPipelines.end())
 +		return found->second;
@@ -1172,14 +1202,27 @@ index 0000000..e1dd067
 +    out.uv = (p + 1.0) * 0.5;
 +    return out;
 +}
++// FOVEATION AS A COMPILE-TIME CHOICE.
++//
++// Every rate-map decode below exists for one reason: a foveated eye texture
++// holds a non-uniformly packed image, so a fragment's own position is not
++// where its colour lives. Switch foveation off and packed IS logical -- the
++// decoding is not merely unnecessary, the maps do not exist to decode with.
++//
++// A function constant rather than a second shader: the arithmetic is the same
++// question either way, and two copies of it would drift the first time one is
++// edited. Arguments marked with it simply are not there in the unfoveated
++// variant, so nothing has to be bound.
++constant bool kFoveated [[function_constant(0)]];
++
 +struct CopyUniforms {
 +    float2 invPhysical;   // 1 / source physical size
 +    float2 screenSize;    // logical eye, both maps share it
 +};
 +fragment float4 xr_copy_fragment(CopyOut in [[stage_in]],
 +                                 texture2d<float> source [[texture(0)]],
-+                                 constant rasterization_rate_map_data &destRate [[buffer(0)]],
-+                                 constant rasterization_rate_map_data &srcRate [[buffer(1)]],
++                                 constant rasterization_rate_map_data &destRate [[buffer(0), function_constant(kFoveated)]],
++                                 constant rasterization_rate_map_data &srcRate [[buffer(1), function_constant(kFoveated)]],
 +                                 constant CopyUniforms &uniforms [[buffer(2)]]) {
 +    constexpr sampler linearSampler(filter::linear,
 +                                    address::clamp_to_edge);
@@ -1196,11 +1239,17 @@ index 0000000..e1dd067
 +    //
 +    // Decode this destination fragment to logical with the DESTINATION map,
 +    // mirror there, then encode back with the SOURCE map. Exact for any pair.
-+    rasterization_rate_map_decoder destDecoder(destRate);
-+    rasterization_rate_map_decoder srcDecoder(srcRate);
-+    float2 logical = destDecoder.map_physical_to_screen_coordinates(in.position.xy);
-+    logical.y = uniforms.screenSize.y - logical.y;
-+    float2 physical = srcDecoder.map_screen_to_physical_coordinates(logical);
++    float2 physical;
++    if (kFoveated) {
++        rasterization_rate_map_decoder destDecoder(destRate);
++        rasterization_rate_map_decoder srcDecoder(srcRate);
++        float2 logical = destDecoder.map_physical_to_screen_coordinates(in.position.xy);
++        logical.y = uniforms.screenSize.y - logical.y;
++        physical = srcDecoder.map_screen_to_physical_coordinates(logical);
++    } else {
++        // Same size, same packing, so only the mirror is left to do.
++        physical = float2(in.position.x, uniforms.screenSize.y - in.position.y);
++    }
 +    return source.sample(linearSampler, physical * uniforms.invPhysical);
 +}
 +struct ResolveUniforms { float2 screenSize; float2 outputSize; };
@@ -1212,18 +1261,22 @@ index 0000000..e1dd067
 +        CopyOut in [[stage_in]],
 +        texture2d<float> packedColor [[texture(0)]],
 +        depth2d<float> packedDepth [[texture(1)]],
-+        constant rasterization_rate_map_data &rateData [[buffer(0)]],
++        constant rasterization_rate_map_data &rateData [[buffer(0), function_constant(kFoveated)]],
 +        constant ResolveUniforms &uniforms [[buffer(1)]]) {
 +    constexpr sampler colorSampler(coord::pixel, filter::linear,
 +                                   address::clamp_to_edge);
 +    constexpr sampler depthSampler(coord::pixel, filter::nearest,
 +                                   address::clamp_to_edge);
-+    rasterization_rate_map_decoder decoder(rateData);
 +    // This output is a conventional physical-resolution texture spanning the
 +    // whole logical eye. Convert its pixel to logical screen coordinates, then
-+    // ask Metal where that point lives in the packed intermediary.
++    // ask Metal where that point lives in the packed intermediary -- or, with
++    // no packing, that logical point IS the physical one.
 +    float2 logical = in.position.xy * uniforms.screenSize / uniforms.outputSize;
-+    float2 physical = decoder.map_screen_to_physical_coordinates(logical);
++    float2 physical = logical;
++    if (kFoveated) {
++        rasterization_rate_map_decoder decoder(rateData);
++        physical = decoder.map_screen_to_physical_coordinates(logical);
++    }
 +    ResolveOut out;
 +    out.color = packedColor.sample(colorSampler, physical);
 +    out.depth = packedDepth.sample(depthSampler, physical);
@@ -1258,7 +1311,7 @@ index 0000000..e1dd067
 +
 +	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
 +	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
-+	desc.fragmentFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_fragment"];
++	desc.fragmentFunction = specialisedFragment(@"xr_copy_fragment", foveated);
 +	desc.colorAttachments[0].pixelFormat = colorFormat;
 +	desc.depthAttachmentPixelFormat = depthFormat;
 +	NSError *error = nil;
@@ -1281,13 +1334,13 @@ index 0000000..e1dd067
 +		return g_rateLookupPipeline;
 +	if (g_foveatedCopyLibrary == nil
 +		&& foveatedCopyPipeline(device, MTLPixelFormatBGRA8Unorm,
-+			MTLPixelFormatInvalid) == nil)
++			MTLPixelFormatInvalid, true) == nil)
 +		return nil;
 +
 +	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
 +	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
-+	desc.fragmentFunction = [g_foveatedCopyLibrary
-+		newFunctionWithName:@"xr_rate_lookup_fragment"];
++	// Only meaningful with a packing to look up, so always the foveated build.
++	desc.fragmentFunction = specialisedFragment(@"xr_rate_lookup_fragment", true);
 +	desc.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
 +	NSError *error = nil;
 +	g_rateLookupPipeline = [device newRenderPipelineStateWithDescriptor:desc
@@ -1377,9 +1430,10 @@ index 0000000..e1dd067
 +}
 +
 +static id<MTLRenderPipelineState> foveatedResolvePipeline(id<MTLDevice> device,
-+											   MTLPixelFormat colorFormat)
++											   MTLPixelFormat colorFormat,
++											   bool foveated)
 +{
-+	uint64_t key = (uint64_t) colorFormat;
++	uint64_t key = ((uint64_t) colorFormat << 1) | (foveated ? 1 : 0);
 +	auto found = g_foveatedResolvePipelines.find(key);
 +	if (found != g_foveatedResolvePipelines.end())
 +		return found->second;
@@ -1387,12 +1441,13 @@ index 0000000..e1dd067
 +	// This also creates the shared source library on first use. The returned
 +	// copy pipeline is cached for submitFrame and needs no work here.
 +	if (g_foveatedCopyLibrary == nil
-+		&& foveatedCopyPipeline(device, colorFormat, MTLPixelFormatInvalid) == nil)
++		&& foveatedCopyPipeline(device, colorFormat, MTLPixelFormatInvalid,
++								foveated) == nil)
 +		return nil;
 +
 +	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
 +	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
-+	desc.fragmentFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_resolve_fragment"];
++	desc.fragmentFunction = specialisedFragment(@"xr_resolve_fragment", foveated);
 +	desc.colorAttachments[0].pixelFormat = colorFormat;
 +	desc.colorAttachments[1].pixelFormat = MTLPixelFormatR32Float;
 +	NSError *error = nil;
@@ -1576,16 +1631,227 @@ index 0000000..e1dd067
 + * state is logged on the first hands() call after startup and the device gets
 + * to answer it.
 + */
++// ------------------------------------------------- what GameController has
++//
++// Named once per connect, and once at startup for whatever is already paired.
++//
++// This exists because the PSVR2 Sense controllers are the one input path with
++// no documented answer: whether they reach the app as GCControllers at all,
++// what productCategory they carry, and which of GCInputNames' keys their
++// profile actually resolves. Apple's headers name the vocabulary
++// (GCInputThumbstick, GCInputTrigger, GCInputGripButton, ...) but not which of
++// it any given device speaks. So the device says, and the mapping is written
++// against what it said rather than against what seemed likely.
++static void logController(GCController *c)
++{
++	if (c == nil)
++		return;
++
++	NSMutableArray<NSString *> *els = [NSMutableArray array];
++	GCPhysicalInputProfile *p = c.physicalInputProfile;
++	if (p != nil)
++	{
++		for (NSString *k in p.buttons.allKeys)   [els addObject:[@"btn:" stringByAppendingString:k]];
++		for (NSString *k in p.axes.allKeys)      [els addObject:[@"axis:" stringByAppendingString:k]];
++		for (NSString *k in p.dpads.allKeys)     [els addObject:[@"dpad:" stringByAppendingString:k]];
++	}
++
++	printf("[xr] controller \"%s\" vendor=\"%s\" category=\"%s\" player=%ld\n"
++		   "[xr]   elements: %s\n",
++		   [(c.productCategory ?: @"?") UTF8String],
++		   [(c.vendorName ?: @"?") UTF8String],
++		   [(c.productCategory ?: @"?") UTF8String],
++		   (long) c.playerIndex,
++		   [([els componentsJoinedByString:@", "] ?: @"none") UTF8String]);
++	fflush(stdout);
++}
++
++// ---------------------------------------------- the Sense pair, tracked
++//
++// A PSVR2 Sense controller is not an ordinary GCController: one of them cannot
++// offer a whole gamepad profile, and GameController only enumerates devices
++// that can, so the system surfaces them as GCSpatialAccessory instead. That
++// class is visionOS 27, and this app deploys to 26, so it is reached through
++// the availability check with the productCategory scan behind it.
++//
++// The pair ALSO arrives as one ordinary coalesced gamepad, and that one is
++// left alone on purpose -- it is what SDL enumerates and what already drives
++// the buttons and the sticks. Only the poses come from here.
++static ar_accessory_tracking_provider_t g_accessoryTracking = nullptr;
++static NSMutableArray *g_accessories = nil;         // ar_accessory_t, ARC-held
++static ar_accessory_anchor_t g_accessoryPose[2] = { nullptr, nullptr };
++
++// The controller in each hand, [0] left and [1] right, for reading its stick.
++//
++// Filled while the accessories load, because that is the one moment both
++// halves are in hand at once: ar_accessory_get_inherent_chirality answers for
++// the accessory, and the GCDevice it was loaded FROM is the thing with the
++// buttons on it. Pairing them anywhere else would mean matching on the vendor
++// string, which is a guess dressed as an identifier.
++static id<GCDevice> g_padDevice[2] = { nil, nil };
++static std::atomic<bool> g_accessoryLive(false);
++
++static void runProviders(void);
++
++// The devices worth asking ARKit about.
++static NSArray<id<GCDevice>> *spatialDevices(void)
++{
++	if (@available(visionOS 27.0, *))
++	{
++		NSArray *spatial = GCSpatialAccessory.spatialAccessories;
++		if (spatial.count > 0)
++			return spatial;
++	}
++
++	// Older systems, and newer ones that answered nothing: whatever the
++	// ordinary list holds that calls itself spatial.
++	//
++	// The whole list is scanned rather than stopping at the first hit. An
++	// earlier "is it still empty" test inside the loop took the first
++	// controller and skipped the second, which reads as one hand that follows
++	// and one that does not.
++	NSMutableArray<id<GCDevice>> *found = [NSMutableArray array];
++	for (GCController *c in GCController.controllers)
++		if ([c.productCategory isEqualToString:GCProductCategorySpatialController])
++			[found addObject:c];
++	return found;
++}
++
++// Reload the accessories and rebuild the provider around them.
++//
++// Called on the main queue only -- at session start and from the connect
++// notifications -- so the array needs no lock of its own; the render thread
++// only ever reads g_accessoryTracking, which is published after the array is
++// whole.
++static void rebuildAccessories(void)
++{
++	NSArray<id<GCDevice>> *devices = spatialDevices();
++	printf("[xr] %lu spatial device(s)\n", (unsigned long) devices.count);
++	fflush(stdout);
++	if (devices.count == 0)
++		return;
++
++	NSMutableArray *loaded = [NSMutableArray array];
++	dispatch_group_t group = dispatch_group_create();
++	for (id<GCDevice> device in devices)
++	{
++		dispatch_group_enter(group);
++		ar_accessory_load_from_device(device,
++			^(id<GCDevice> d, bool ok, ar_error_t error, ar_accessory_t accessory) {
++				(void) error;
++				if (ok && accessory != nullptr)
++				{
++					@synchronized (loaded) { [loaded addObject:accessory]; }
++					ar_accessory_chirality_t side =
++						ar_accessory_get_inherent_chirality(accessory);
++					if (side == ar_accessory_chirality_left)  g_padDevice[0] = d;
++					if (side == ar_accessory_chirality_right) g_padDevice[1] = d;
++					printf("[xr]   accessory \"%s\" inherent chirality=%d\n",
++						   ar_accessory_get_name(accessory), (int) side);
++				}
++				else
++					printf("[xr]   an accessory would not load\n");
++				fflush(stdout);
++				dispatch_group_leave(group);
++			});
++	}
++	// Loading is a file read off the accessory's model, not a network call.
++	// Waiting is simpler than a completion chain and this is not a frame path.
++	dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
++
++	if (loaded.count == 0)
++		return;
++
++	ar_accessories_t set = ar_accessories_create();
++	for (ar_accessory_t a in loaded)
++		ar_accessories_add_accessory(set, a);
++
++	ar_accessory_tracking_configuration_t cfg = ar_accessory_tracking_configuration_create();
++	ar_accessory_tracking_configuration_set_accessories(cfg, set);
++
++	g_accessories = loaded;
++	g_accessoryTracking = ar_accessory_tracking_provider_create(cfg);
++	if (g_accessoryPose[0] == nullptr)
++	{
++		g_accessoryPose[0] = ar_accessory_anchor_create();
++		g_accessoryPose[1] = ar_accessory_anchor_create();
++	}
++	printf("[xr] tracking %lu accessory/accessories\n", (unsigned long) loaded.count);
++	fflush(stdout);
++
++	// Re-running is the blunt way to change the tracked set, and the graceful
++	// one (ar_accessory_tracking_provider_update_accessories) is visionOS 27.
++	// World and hand tracking go back in the same call so neither is dropped.
++	runProviders();
++}
++
++static void watchControllers(void)
++{
++	static bool watching = false;
++	if (watching)
++		return;
++	watching = true;
++
++	// The spatial notifications by NAME as well as the ordinary ones: the
++	// spatial pair does not raise GCControllerDidConnect, so watching only
++	// that leaves a controller switched on after launch invisible for ever.
++	NSArray<NSString *> *names = @[
++		GCControllerDidConnectNotification,
++		GCControllerDidDisconnectNotification,
++		@"GCSpatialAccessoryDidConnectNotification",
++		@"GCSpatialAccessoryDidDisconnectNotification",
++	];
++	for (NSString *name in names)
++	{
++		[[NSNotificationCenter defaultCenter]
++			addObserverForName:name
++						object:nil
++						 queue:[NSOperationQueue mainQueue]
++					usingBlock:^(NSNotification *note) {
++						if ([note.object isKindOfClass:[GCController class]])
++							logController((GCController *) note.object);
++						rebuildAccessories();
++					}];
++	}
++
++	printf("[xr] accessory tracking supported=%d; %lu controller(s) already paired\n",
++		   (int) ar_accessory_tracking_provider_is_supported(),
++		   (unsigned long) GCController.controllers.count);
++	fflush(stdout);
++	for (GCController *c in GCController.controllers)
++		logController(c);
++}
++
++// Every provider that currently exists, started together.
++//
++// One place, because ar_session_run REPLACES the provider set rather than
++// adding to it: starting accessory tracking on its own would silently stop the
++// world tracking every eye matrix depends on.
++static void runProviders(void)
++{
++	if (g_arSession == nullptr)
++		return;
++
++	ar_data_providers_t providers = ar_data_providers_create();
++	if (g_worldTracking != nullptr)
++		ar_data_providers_add_data_provider(providers, g_worldTracking);
++	if (g_handTracking != nullptr)
++		ar_data_providers_add_data_provider(providers, g_handTracking);
++	if (g_accessoryTracking != nullptr)
++		ar_data_providers_add_data_provider(providers, g_accessoryTracking);
++	ar_session_run(g_arSession, providers);
++	g_accessoryLive.store(g_accessoryTracking != nullptr, std::memory_order_release);
++}
++
 +static void ensureARSession(void)
 +{
++	watchControllers();
++
 +	if (g_worldTracking != nullptr)
 +		return;
 +
 +	g_worldTracking = ar_world_tracking_provider_create(
 +		ar_world_tracking_configuration_create());
-+
-+	ar_data_providers_t providers = ar_data_providers_create();
-+	ar_data_providers_add_data_provider(providers, g_worldTracking);
 +
 +	// Hands, where the device offers them. Not fatal if it does not: the
 +	// pad path is unaffected and love.xr.hands simply reports nothing.
@@ -1593,7 +1859,6 @@ index 0000000..e1dd067
 +	{
 +		g_handTracking = ar_hand_tracking_provider_create(
 +			ar_hand_tracking_configuration_create());
-+		ar_data_providers_add_data_provider(providers, g_handTracking);
 +		g_handAnchors[0] = ar_hand_anchor_create();
 +		g_handAnchors[1] = ar_hand_anchor_create();
 +	}
@@ -1612,15 +1877,25 @@ index 0000000..e1dd067
 +	if (g_handTracking != nullptr)
 +		wanted = (ar_authorization_type_t)
 +			(wanted | ar_authorization_type_hand_tracking);
++	// Accessory tracking has its own permission, and it is NOT covered by
++	// world sensing -- asking for the others and running an accessory provider
++	// anyway is the same silent nothing the hands gave before this was fixed
++	// for them.
++	if (ar_accessory_tracking_provider_is_supported())
++		wanted = (ar_authorization_type_t)
++			(wanted | ar_accessory_tracking_provider_get_required_authorization_type());
 +	ar_session_request_authorization(g_arSession, wanted,
 +		^(ar_authorization_results_t results, ar_error_t error) {
 +			(void) results;
 +			printf("[xr] authorization returned%s\n",
 +				   error != nullptr ? " with an error" : "");
 +			fflush(stdout);
++			// The accessories come AFTER the answer: loading one before the
++			// permission exists gets a provider that runs and reports nothing.
++			dispatch_async(dispatch_get_main_queue(), ^{ rebuildAccessories(); });
 +		});
 +
-+	ar_session_run(g_arSession, providers);
++	runProviders();
 +}
 +
 +/**
@@ -1659,7 +1934,16 @@ index 0000000..e1dd067
 +	cp_layer_renderer_set_minimum_frame_repeat_count(g_layer, 1);
 +	// Quality values above the old ~0.52 default are valid once the layer is
 +	// foveated. The final pass consumes its eye-tracked rate maps below.
-+	cp_layer_renderer_set_render_quality(g_layer, 1.0f);
++	//
++	// The range is narrower than "anything up to 1.0 when foveated": asking
++	// for 0.5 on an UNFOVEATED layer aborted the process with SIGABRT on the
++	// first frame, so this is not a free dial in either direction.
++	// NOT SET. Raising quality is only permitted on a foveated layer, and
++	// foveation is off (see GRLayerConfiguration); asking an unfoveated layer
++	// for a value at all -- even one below its default -- aborted the process
++	// on the first frame. Its own default is the setting.
++	//
++	// Put this back, guarded, if foveation ever returns.
 +
 +	printf("[xr] claim ok on %p\n", (__bridge void *) g_layer);
 +	fflush(stdout);
@@ -1756,9 +2040,15 @@ index 0000000..e1dd067
 +		MTLSize screen = map != nil ? map.screenSize : MTLSizeMake(0, 0, 0);
 +		MTLSize physical = map != nil ? [map physicalSizeForLayer:0]
 +			: MTLSizeMake(color.width, color.height, 0);
-+		printf("[xr] drawable %lux%lu, quality %.2f, repeats %d, "
++		// The colour FORMAT is in here because it decides what the numbers the
++		// shaders write actually mean. CompositorServices picks it, not us: a
++		// float format is linear and extended-range, an 8-bit sRGB one is
++		// gamma-encoded, and writing values meant for one into the other is
++		// the classic "the PC build's colours look better" complaint.
++		printf("[xr] drawable %lux%lu fmt=%lu, quality %.2f, repeats %d, "
 +			   "foveation maps=%lu screen=%lux%lu physical=%lux%lu\n",
 +			(unsigned long) color.width, (unsigned long) color.height,
++			(unsigned long) color.pixelFormat,
 +			(float) cp_layer_renderer_get_render_quality(layer),
 +			cp_layer_renderer_get_minimum_frame_repeat_count(layer),
 +			(unsigned long) mapCount,
@@ -1985,17 +2275,23 @@ index 0000000..e1dd067
 +		index < (int) cp_drawable_get_rasterization_rate_map_count(g_drawable)
 +			? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, index) : nil;
 +	id<MTLRenderPipelineState> pipeline =
-+		foveatedResolvePipeline(sourceColor.device, sourceColor.pixelFormat);
++		foveatedResolvePipeline(sourceColor.device, sourceColor.pixelFormat,
++								map != nil);
 +	if (sourceDepth == nil || outColor == nil || outDepth == nil
-+		|| map == nil || pipeline == nil)
++		|| pipeline == nil)
 +		return 0;
 +
-+	MTLSizeAndAlign layout = map.parameterBufferSizeAndAlign;
-+	id<MTLBuffer> rateData = [map.device newBufferWithLength:layout.size
-+		options:MTLResourceStorageModeShared];
-+	if (rateData == nil)
-+		return 0;
-+	[map copyParameterDataToBuffer:rateData offset:0];
++	// Only the foveated build reads this, and only it can produce one.
++	id<MTLBuffer> rateData = nil;
++	if (map != nil)
++	{
++		MTLSizeAndAlign layout = map.parameterBufferSizeAndAlign;
++		rateData = [map.device newBufferWithLength:layout.size
++			options:MTLResourceStorageModeShared];
++		if (rateData == nil)
++			return 0;
++		[map copyParameterDataToBuffer:rateData offset:0];
++	}
 +
 +	id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)
 +		metalgfx->getCommandQueue();
@@ -2013,7 +2309,8 @@ index 0000000..e1dd067
 +	[enc setRenderPipelineState:pipeline];
 +	[enc setFragmentTexture:sourceColor atIndex:0];
 +	[enc setFragmentTexture:sourceDepth atIndex:1];
-+	[enc setFragmentBuffer:rateData offset:0 atIndex:0];
++	if (rateData != nil)
++		[enc setFragmentBuffer:rateData offset:0 atIndex:0];
 +	struct { simd_float2 screenSize; simd_float2 outputSize; } uniforms = {
 +		{ (float) map.screenSize.width, (float) map.screenSize.height },
 +		{ (float) outColor.width, (float) outColor.height }
@@ -2116,9 +2413,12 @@ index 0000000..e1dd067
 +
 +		id<MTLRenderCommandEncoder> enc = [cmd renderCommandEncoderWithDescriptor:pass];
 +		id<MTLTexture> source = i < 2 ? g_eyeSources[i] : nil;
++		bool foveated =
++			cp_drawable_get_rasterization_rate_map_count(g_drawable) > (size_t) i;
 +		id<MTLRenderPipelineState> pipeline = foveatedCopyPipeline(
 +			color.device, color.pixelFormat,
-+			depth != nil ? depth.pixelFormat : MTLPixelFormatInvalid);
++			depth != nil ? depth.pixelFormat : MTLPixelFormatInvalid,
++			foveated);
 +		if (source != nil && pipeline != nil)
 +		{
 +			[enc setViewport:(MTLViewport){ 0, 0, (double) color.width,
@@ -2450,8 +2750,132 @@ index 0000000..e1dd067
 +	return 1;
 +}
 +
++/**
++ * The Sense controllers' 6DoF poses, in hands()' shape: { {tracked=, pose=},
++ * {tracked=, pose=} }, left first.
++ *
++ * The GRIP location rather than the anchor itself -- the point the hand closes
++ * around, which is where a held object belongs. Aim would put it where a laser
++ * pointer starts, which is right for the gun and wrong for the pokedex, so aim
++ * is offered beside it rather than instead of it.
++ */
++static int w_accessories(lua_State *L)
++{
++	lua_createtable(L, 2, 0);
++	for (int i = 0; i < 2; i++)
++	{
++		lua_createtable(L, 0, 3);
++		lua_pushboolean(L, false);
++		lua_setfield(L, -2, "tracked");
++		lua_rawseti(L, -2, i + 1);
++	}
++
++	if (!g_accessoryLive.load(std::memory_order_acquire) || g_accessoryTracking == nullptr)
++		return 1;
++
++	ar_accessory_anchors_t anchors =
++		ar_accessory_tracking_provider_get_latest_anchors(g_accessoryTracking);
++	if (anchors == nullptr)
++		return 1;
++
++	ar_accessory_anchors_enumerate_anchors(anchors, ^bool(ar_accessory_anchor_t anchor) {
++		// Orientation without a position, or nothing at all: either way the
++		// position cannot be trusted, and a prop that jumps to a guessed one
++		// reads far worse than one that holds still.
++		if (ar_accessory_anchor_get_tracking_state(anchor)
++			!= ar_accessory_anchor_tracking_state_position_orientation_tracked)
++			return true;
++
++		// What a controller is DESIGNED for is only a hint; which hand is
++		// actually holding it is the truth, and on a pair picked up the wrong
++		// way round the two disagree.
++		ar_accessory_chirality_t side = ar_accessory_anchor_get_held_chirality(anchor);
++		if (side == ar_accessory_chirality_unspecified)
++			side = ar_accessory_get_inherent_chirality(
++				ar_accessory_anchor_get_accessory(anchor));
++		int slot = (side == ar_accessory_chirality_left) ? 1
++				 : (side == ar_accessory_chirality_right) ? 2 : 0;
++		if (slot == 0)
++			return true;
++
++		simd_float4x4 originFromAnchor =
++			ar_accessory_anchor_get_origin_from_anchor_transform_with_correction(
++				anchor, ar_transform_correction_rendered);
++		simd_float4x4 anchorFromGrip =
++			ar_accessory_anchor_get_anchor_from_location_transform_with_correction(
++				anchor, ar_accessory_location_name_grip, ar_transform_correction_rendered);
++		// Recentred exactly as the head and the hands are, or the prop hangs
++		// somewhere the eye is not looking.
++		simd_float4x4 world = simd_mul(g_rigFromOrigin,
++			simd_mul(originFromAnchor, anchorFromGrip));
++		simd_float4 pos = world.columns[3];
++		simd_quatf q = simd_quaternion(world);
++
++		lua_rawgeti(L, -1, slot);
++		lua_pushboolean(L, true);
++		lua_setfield(L, -2, "tracked");
++		lua_createtable(L, 0, 2);
++		lua_createtable(L, 3, 0);
++		lua_pushnumber(L, pos.x); lua_rawseti(L, -2, 1);
++		lua_pushnumber(L, pos.y); lua_rawseti(L, -2, 2);
++		lua_pushnumber(L, pos.z); lua_rawseti(L, -2, 3);
++		lua_setfield(L, -2, "pos");
++		lua_createtable(L, 4, 0);
++		lua_pushnumber(L, q.vector.x); lua_rawseti(L, -2, 1);
++		lua_pushnumber(L, q.vector.y); lua_rawseti(L, -2, 2);
++		lua_pushnumber(L, q.vector.z); lua_rawseti(L, -2, 3);
++		lua_pushnumber(L, q.vector.w); lua_rawseti(L, -2, 4);
++		lua_setfield(L, -2, "quat");
++		lua_setfield(L, -2, "pose");
++		lua_pop(L, 1);
++		return true;
++	});
++
++	return 1;
++}
++
++/**
++ * The Sense controllers' thumbsticks: { {x,y}, {x,y} }, left first, zeros
++ * where there is nothing to report.
++ *
++ * Read from GameController rather than through SDL, because SDL will not give
++ * them up. It recognises these devices and hands them a gamepad mapping, but
++ * leaves every named axis at zero -- measured on the device, over 269 samples:
++ * the four axes leftx/lefty/rightx/righty never moved, while the trigger and
++ * the grip did. GameController names the same stick three ways, and only one
++ * of them is analogue: `GCInputThumbstick` as a direction pad beside the four
++ * digital Thumbstick Up/Down/Left/Right buttons. SDL evidently took the
++ * digital reading; this takes the pad, and gets the throw back.
++ */
++static int w_sticks(lua_State *L)
++{
++	lua_createtable(L, 2, 0);
++	for (int i = 0; i < 2; i++)
++	{
++		float x = 0, y = 0;
++		GCController *c = (GCController *) g_padDevice[i];
++		if ([c isKindOfClass:[GCController class]])
++		{
++			GCControllerDirectionPad *stick =
++				c.physicalInputProfile.dpads[GCInputThumbstick];
++			if (stick != nil)
++			{
++				x = stick.xAxis.value;
++				y = stick.yAxis.value;
++			}
++		}
++		lua_createtable(L, 2, 0);
++		lua_pushnumber(L, x); lua_rawseti(L, -2, 1);
++		lua_pushnumber(L, y); lua_rawseti(L, -2, 2);
++		lua_rawseti(L, -2, i + 1);
++	}
++	return 1;
++}
++
 +static const luaL_Reg functions[] =
 +{
++	{ "accessories", w_accessories },
++	{ "sticks",      w_sticks      },
 +	{ "available",   w_available   },
 +	{ "supported",   w_supported   },
 +	{ "claim",       w_claim       },
