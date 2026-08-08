@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..033329d
+index 0000000..d2555b3
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2041 @@
+@@ -0,0 +1,2070 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -930,6 +930,13 @@ index 0000000..033329d
 +#include "graphics/wrap_Texture.h"
 +#include "graphics/metal/Graphics.h"
 +#include "graphics/metal/Texture.h"
++
++// How much of the drawable an eye is actually rendered at. One on device.
++#if TARGET_OS_SIMULATOR
++#define XR_EYE_SCALE 0.5
++#else
++#define XR_EYE_SCALE 1.0
++#endif
 +
 +#import <ARKit/ARKit.h>
 +#import <CompositorServices/CompositorServices.h>
@@ -1087,9 +1094,19 @@ index 0000000..033329d
 +	// No map means no packing: the logical eye IS the texture. Bailing out
 +	// here was why switching foveation off produced a black space -- the eye
 +	// render targets were never created, so nothing was ever drawn.
++	//
++	// SCALE is 1 everywhere but the simulator, which draws several megapixels
++	// on the Mac's GPU with no headset silicon under it -- and the water's
++	// screen-space march samples the depth buffer two dozen times per pixel,
++	// so the cost is quadratic in exactly the wrong dimension. At full size
++	// the system killed the app; at a quarter it has a chance. The final copy
++	// stretches it back over the drawable.
++	const double kEyeScale = XR_EYE_SCALE;
++	NSUInteger tw = (NSUInteger) (drawableColor.width * kEyeScale);
++	NSUInteger th = (NSUInteger) (drawableColor.height * kEyeScale);
 +	MTLSize screen = (map != nil)
 +		? map.screenSize
-+		: MTLSizeMake(drawableColor.width, drawableColor.height, 1);
++		: MTLSizeMake(tw, th, 1);
 +
 +	bool matches = g_eyeRenderColors[index] != nullptr
 +		&& g_eyeRenderDepths[index] != nullptr
@@ -1099,8 +1116,8 @@ index 0000000..033329d
 +	{
 +		id<MTLTexture> existing = (__bridge id<MTLTexture>)
 +			(void *) g_eyeRenderColors[index]->getHandle();
-+		matches = existing.width == drawableColor.width
-+			&& existing.height == drawableColor.height;
++		matches = existing.width == ((map != nil) ? drawableColor.width : tw)
++			&& existing.height == ((map != nil) ? drawableColor.height : th);
 +	}
 +
 +	if (!matches)
@@ -1112,16 +1129,18 @@ index 0000000..033329d
 +		g_eyeRenderColors[index] = nullptr;
 +		g_eyeRenderDepths[index] = nullptr;
 +
++		NSUInteger aw = (map != nil) ? drawableColor.width : tw;
++		NSUInteger ah = (map != nil) ? drawableColor.height : th;
 +		MTLTextureDescriptor *colorDesc = [MTLTextureDescriptor
 +			texture2DDescriptorWithPixelFormat:drawableColor.pixelFormat
-+			width:drawableColor.width height:drawableColor.height mipmapped:NO];
++			width:aw height:ah mipmapped:NO];
 +		colorDesc.storageMode = MTLStorageModePrivate;
 +		colorDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
 +		id<MTLTexture> color = [drawableColor.device newTextureWithDescriptor:colorDesc];
 +
 +		MTLTextureDescriptor *depthDesc = [MTLTextureDescriptor
 +			texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-+			width:drawableColor.width height:drawableColor.height mipmapped:NO];
++			width:aw height:ah mipmapped:NO];
 +		depthDesc.storageMode = MTLStorageModePrivate;
 +		depthDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
 +		id<MTLTexture> depth = [drawableColor.device newTextureWithDescriptor:depthDesc];
@@ -1249,8 +1268,14 @@ index 0000000..033329d
 +    } else {
 +        // Same size, same packing, and -- since the mod stopped flipping
 +        // clip-space Y on this renderer -- nothing to mirror either. The eye
-+        // arrives the right way up, so this is a straight copy.
-+        physical = in.position.xy;
++        // arrives the right way up.
++        //
++        // Normalised by the DESTINATION rather than the source, so the two
++        // need not be the same size: a source rendered smaller is simply
++        // stretched over the drawable by the sampler. Identical arithmetic
++        // when they do match, which is every case but the simulator's.
++        return source.sample(linearSampler,
++                             in.position.xy / uniforms.screenSize);
 +    }
 +    return source.sample(linearSampler, physical * uniforms.invPhysical);
 +}
@@ -2492,8 +2517,12 @@ index 0000000..033329d
 +			} copyUniforms;
 +			copyUniforms.invPhysical = (simd_float2){ 1.0f / source.width,
 +													 1.0f / source.height };
++			// Unfoveated, this is what the fragment normalises against, so it
++			// is the DESTINATION -- the drawable being written, not the source
++			// being read. They are the same size except where the eye is
++			// deliberately rendered smaller.
 +			MTLSize screenSize = destMap != nil ? destMap.screenSize
-+											    : (MTLSize){ source.width, source.height, 1 };
++											    : (MTLSize){ color.width, color.height, 1 };
 +			copyUniforms.screenSize = (simd_float2){ (float) screenSize.width,
 +													(float) screenSize.height };
 +			[enc setFragmentBytes:&copyUniforms length:sizeof(copyUniforms) atIndex:2];
