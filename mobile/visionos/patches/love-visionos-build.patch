@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..c29c1bf
+index 0000000..aa0eac4
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2017 @@
+@@ -0,0 +1,2019 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -1247,8 +1247,10 @@ index 0000000..c29c1bf
 +        logical.y = uniforms.screenSize.y - logical.y;
 +        physical = srcDecoder.map_screen_to_physical_coordinates(logical);
 +    } else {
-+        // Same size, same packing, so only the mirror is left to do.
-+        physical = float2(in.position.x, uniforms.screenSize.y - in.position.y);
++        // Same size, same packing, and -- since the mod stopped flipping
++        // clip-space Y on this renderer -- nothing to mirror either. The eye
++        // arrives the right way up, so this is a straight copy.
++        physical = in.position.xy;
 +    }
 +    return source.sample(linearSampler, physical * uniforms.invPhysical);
 +}

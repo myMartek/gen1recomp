@@ -847,12 +847,20 @@ function Renderer:endFrame(zones, worldZones)
     -- runs, so dialogs, menus and the HUD sit on top as usual.
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.setScissor(0, 0, ww, wh)
-    local loveMajor = love.getVersion()
-    if love.system and love.system.getOS and love.system.getOS() == "iOS" and loveMajor >= 12 then
-      love.graphics.draw(self.worldOverride, 0, wh, 0, 1 / dpiX, -1 / dpiY)
-    else
-      love.graphics.draw(self.worldOverride, 0, 0, 0, 1 / dpiX, 1 / dpiY)
-    end
+    -- A STRAIGHT BLIT, on every platform.
+    --
+    -- This used to draw with a negative Y scale on iOS under LOVE 12, to turn
+    -- back a world canvas that arrived mirrored. It arrived mirrored because
+    -- the voxel mod premultiplied a clip-space Y flip onto every projection --
+    -- correct on OpenGL, where LOVE inverts canvas projections itself, and
+    -- wrong on Metal, where it does not. Two errors that cancelled, and the
+    -- cancellation only ever held for the PICTURE: anything that computed a
+    -- screen position and then sampled a texture with it read the wrong rows.
+    --
+    -- The mod now applies that flip only where LOVE applies one, so the canvas
+    -- is upright on both backends and there is nothing to undo. These two
+    -- changes belong together and must not be split.
+    love.graphics.draw(self.worldOverride, 0, 0, 0, 1 / dpiX, 1 / dpiY)
     love.graphics.setScissor()
     -- the screen-space overlays the flat path draws over its composite
     local fade = self.worldFadeAlpha
