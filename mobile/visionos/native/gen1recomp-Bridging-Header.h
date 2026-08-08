@@ -52,6 +52,11 @@ void love_visionos_clearLayerRenderer(void *layerRenderer);
 /// two loops calling cp_frame_* on one layer is a race.
 bool love_visionos_xrClaimed(void);
 
+/// The eye the mod last finished, SIMULATOR only -- see wrap_XR.h. There the
+/// mod cannot present for itself, so the host loop puts this up instead of the
+/// flat virtual screen.
+void *love_visionos_simEyeTexture(void);
+
 /// Atomically brackets one host fallback frame during the handover to Lua.
 bool love_visionos_beginHostFrame(void);
 void love_visionos_endHostFrame(void);

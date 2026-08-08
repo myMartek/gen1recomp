@@ -854,10 +854,10 @@ index f3b0966..071f5b2 100644
  			{
 diff --git a/src/modules/xr/wrap_XR.h b/src/modules/xr/wrap_XR.h
 new file mode 100644
-index 0000000..6d66d91
+index 0000000..b9b1c1e
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,39 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS. See wrap_XR.mm.
 + */
@@ -881,14 +881,28 @@ index 0000000..6d66d91
 +extern "C" bool love_visionos_beginHostFrame(void);
 +extern "C" void love_visionos_endHostFrame(void);
 +
++/// The eye the mod last finished, for the SIMULATOR only.
++///
++/// There, CompositorServices hands out no drawable to LOVE's thread: the mod's
++/// render thread parks in cp_frame_query_drawable and never returns, and ten
++/// seconds later wakeboard kills the app for sending no frames. On device the
++/// same call works, so this is not something the port gets to fix.
++///
++/// So in the simulator the host KEEPS the frame loop and the mod never touches
++/// CompositorServices at all: it renders its eye into a texture of its own and
++/// leaves it here, and the host presents it. Not stereo and not head-tracked
++/// -- the simulator tracks nothing anyway -- but it is the mod's own VR render,
++/// on screen, on a machine with no headset attached.
++extern "C" void *love_visionos_simEyeTexture(void);
++
 +#endif // LOVE_VISIONOS
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..d2555b3
+index 0000000..d04d83b
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2070 @@
+@@ -0,0 +1,2175 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -1558,6 +1572,20 @@ index 0000000..d2555b3
 +	fflush(stdout);
 +}
 +
++#if TARGET_OS_SIMULATOR
++#define SIM_EYE_W 1280
++#define SIM_EYE_H 720
++// What the mod last rendered, for the host to present. Written by LOVE's
++// thread at submitEye, read by the host's render thread; a torn read costs a
++// stale frame on a debugging surface, which is not worth a lock.
++static std::atomic<void *> g_simEye(nullptr);
++
++extern "C" void *love_visionos_simEyeTexture(void)
++{
++	return g_simEye.load(std::memory_order_acquire);
++}
++#endif
++
 +extern "C" bool love_visionos_xrClaimed()
 +{
 +	return g_claimed.load(std::memory_order_acquire);
@@ -1945,6 +1973,16 @@ index 0000000..d2555b3
 +		return 1;
 +	}
 +
++#if TARGET_OS_SIMULATOR
++	// The host KEEPS the loop here -- see love_visionos_simEyeTexture. Claiming
++	// would park LOVE's thread in cp_frame_query_drawable for ever.
++	ensureARSession();
++	printf("[xr] claim ok (simulator: host keeps the frame loop)\n");
++	fflush(stdout);
++	luax_pushboolean(L, true);
++	return 1;
++#endif
++
 +	// Publish ownership first, then wait for a fallback frame that may already
 +	// be between queryNextFrame and queryDrawable. The old boolean poll allowed
 +	// both loops into CompositorServices and aborted in cp_frame_query_drawable.
@@ -2011,6 +2049,12 @@ index 0000000..d2555b3
 +
 +static int w_beginFrame(lua_State *L)
 +{
++#if TARGET_OS_SIMULATOR
++	// No CompositorServices call at all. The host is pacing the compositor;
++	// this only tells the mod "draw one".
++	lua_pushnumber(L, CACurrentMediaTime());
++	return 1;
++#endif
 +	// Retain the bridged object locally across the timing wait. The Swift host
 +	// can withdraw the global layer concurrently when the immersive space ends.
 +	cp_layer_renderer_t layer = g_layer;
@@ -2140,6 +2184,37 @@ index 0000000..d2555b3
 + */
 +static int w_views(lua_State *L)
 +{
++#if TARGET_OS_SIMULATOR
++	// One view, standing still, looking forward, with a plain symmetric
++	// frustum. The simulator tracks no head and hands out no drawable, so
++	// there is nothing real to report -- and the mod only needs a camera to
++	// render from. Mono, deliberately: two eyes of a scene nobody can look
++	// around in buys nothing and costs twice the frame.
++	lua_createtable(L, 1, 0);
++	lua_createtable(L, 0, 4);
++	lua_createtable(L, 0, 2);
++	lua_createtable(L, 3, 0);
++	for (int k = 1; k <= 3; k++) { lua_pushnumber(L, 0.0); lua_rawseti(L, -2, k); }
++	lua_setfield(L, -2, "pos");
++	lua_createtable(L, 4, 0);
++	lua_pushnumber(L, 0.0); lua_rawseti(L, -2, 1);
++	lua_pushnumber(L, 0.0); lua_rawseti(L, -2, 2);
++	lua_pushnumber(L, 0.0); lua_rawseti(L, -2, 3);
++	lua_pushnumber(L, 1.0); lua_rawseti(L, -2, 4);
++	lua_setfield(L, -2, "quat");
++	lua_setfield(L, -2, "pose");
++	lua_createtable(L, 0, 4);
++	lua_pushnumber(L, -0.6);  lua_setfield(L, -2, "angleLeft");
++	lua_pushnumber(L,  0.6);  lua_setfield(L, -2, "angleRight");
++	lua_pushnumber(L,  0.55); lua_setfield(L, -2, "angleUp");
++	lua_pushnumber(L, -0.55); lua_setfield(L, -2, "angleDown");
++	lua_setfield(L, -2, "fov");
++	lua_pushinteger(L, SIM_EYE_W); lua_setfield(L, -2, "w");
++	lua_pushinteger(L, SIM_EYE_H); lua_setfield(L, -2, "h");
++	lua_rawseti(L, -2, 1);
++	return 1;
++#endif
++
 +	if (g_drawable == nullptr)
 +		return 0;
 +
@@ -2212,8 +2287,38 @@ index 0000000..d2555b3
 +}
 +
 +/** The drawable texture as a model for the linear eye scratch allocation. */
++#if TARGET_OS_SIMULATOR
++static love::graphics::Texture *g_simEyeTex = nullptr;
++
++// The one texture the mod draws into here, and the one the host presents.
++static love::graphics::Texture *simEyeTexture()
++{
++	if (g_simEyeTex != nullptr)
++		return g_simEyeTex;
++	auto gfx = getMetalGraphics();
++	if (gfx == nullptr)
++		return nullptr;
++	love::graphics::Texture::Settings st;
++	st.width = SIM_EYE_W;
++	st.height = SIM_EYE_H;
++	st.renderTarget = true;
++	st.debugName = "xr simulator eye";
++	g_simEyeTex = gfx->newTexture(st);
++	return g_simEyeTex;
++}
++#endif
++
 +static int w_eyeCanvas(lua_State *L)
 +{
++#if TARGET_OS_SIMULATOR
++	{
++		auto tex = simEyeTexture();
++		if (tex == nullptr)
++			return 0;
++		luax_pushtype(L, tex);
++		return 1;
++	}
++#endif
 +	int index = (int) luaL_checkinteger(L, 1) - 1;
 +	if (!ensureEyeRenderTargets(index))
 +		return 0;
@@ -2377,6 +2482,15 @@ index 0000000..d2555b3
 + */
 +static int w_submitEye(lua_State *L)
 +{
++#if TARGET_OS_SIMULATOR
++	{
++		auto tex = simEyeTexture();
++		if (tex != nullptr)
++			g_simEye.store((void *) tex->getHandle(), std::memory_order_release);
++		luax_pushboolean(L, true);
++		return 1;
++	}
++#endif
 +	int index = (int) luaL_checkinteger(L, 1) - 1;
 +	if (g_drawable == nullptr || index < 0 || index >= 2)
 +		return 0;
@@ -2393,6 +2507,11 @@ index 0000000..d2555b3
 +
 +static int w_submitFrame(lua_State *L)
 +{
++#if TARGET_OS_SIMULATOR
++	// The host is pacing the compositor; there is nothing to submit here.
++	luax_pushboolean(L, true);
++	return 1;
++#endif
 +	if (g_frame == nullptr || g_drawable == nullptr)
 +		return 0;
 +

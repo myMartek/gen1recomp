@@ -241,7 +241,17 @@ final class GRImmersiveRenderer {
             return
         }
 
-        let screen = GRLove.virtualScreen
+        // In the SIMULATOR, show what the mod rendered rather than the flat
+        // virtual screen. It cannot present for itself there -- see
+        // love_visionos_simEyeTexture -- so it draws its VR frame into a
+        // texture and this loop, which does still get drawables, puts it up.
+        var screen = GRLove.virtualScreen
+        #if targetEnvironment(simulator)
+        if let raw = love_visionos_simEyeTexture() {
+            screen = Unmanaged<AnyObject>.fromOpaque(raw)
+                .takeUnretainedValue() as? MTLTexture ?? screen
+        }
+        #endif
         let originFromDevice = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
 
         // One view per EYE, not one per texture.
