@@ -66,37 +66,48 @@ struct GRImmersiveContent: CompositorContent {
 struct GRLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities,
                            configuration: inout LayerRenderer.Configuration) {
-        // FOVEATION IS OFF, on purpose and for now.
+        // FOVEATION IS ON.
         //
         // It buys drawable quality -- render quality above the default is only
         // permitted on a foveated layer -- and it costs a coordinate system:
         // the eye textures then hold a non-uniformly packed image whose dense
-        // region follows the gaze, and every shader that addresses the frame
-        // by screen position has to convert. The water's screen-space
-        // reflection is exactly such a shader, it is the one thing that has
-        // never worked in the headset while working in the window, and two
-        // attempts at the conversion changed nothing.
+        // region follows the gaze, and every pass that addresses the frame by
+        // screen position has to decode it. The renderer carries both paths,
+        // so this is a one-line choice.
         //
-        // Off, the eye texture is an ordinary image and the water shader runs
-        // the same path the flat screen runs. If the reflections come back,
-        // the packing was the fault and this is where the real fix belongs.
-        // OFF. Foveation buys render quality above the default and costs a
-        // coordinate system: the eye texture then holds a gaze-packed image,
-        // and every pass that addresses the frame by screen position has to
-        // decode it. The water's screen-space reflection is such a pass, and
-        // it is the one thing that has never been right in the headset while
-        // being right in the window.
+        // It was off for a long stretch while the water's screen-space
+        // reflection was chased, on the theory that the packing was what kept
+        // the trees out of the lake. It was not, and turning it off is what
+        // actually broke them: updateRateLookups allocates the decode table
+        // unconditionally and fills it only where the drawable offers a
+        // rasterization rate map, so an UNFOVEATED layer left it holding
+        // uninitialised private memory -- and handed it out anyway. Every UV
+        // run through it landed on one texel, which is why the reflection's
+        // source came back from the device as a single flat colour while the
+        // flat window's held the scene.
         //
-        // The renderer now has both paths -- see kFoveated in wrap_XR.mm --
-        // so this is a one-line choice rather than a black space.
-        let foveated = false && capabilities.supportsFoveation
+        // That is fixed where it belongs (g_eyeRateValid in wrap_XR.mm), and
+        // the fix is what makes this switch safe in either position.
+        let foveated = capabilities.supportsFoveation
         configuration.isFoveationEnabled = foveated
         if foveated {
+            // 1.0, which is what this was before foveation was switched off.
+            //
+            // It was briefly lowered to 0.6 when 1.0 killed the app with
+            // signal 9 on the first foveated frame -- but that was before two
+            // allocations were corrected: the world view was being derived
+            // from the LOGICAL eye size (nine times the area to mesh), and the
+            // water's mirror was 93 MB an eye rather than 18. Roughly 300 MB
+            // between them. With those gone the original figure fits again.
             configuration.maxRenderQuality = LayerRenderer.RenderQuality(rawValue: 1.0)
-            // LÖVE's canvas convention is vertically opposite Metal's final
-            // drawable convention. The scene uses the flipped map in its
-            // intermediary targets; the native final pass uses the regular.
-            configuration.generateFlippedRasterizationRateMaps = true
+            // NO FLIPPED MAPS.
+            //
+            // These existed to cancel the mod's own clip-space Y flip, which
+            // is gone -- lib/Voxel3D.lua no longer premultiplies it on Metal,
+            // and every compensation that paired with it came out with it.
+            // Asked for and used here, it is one flip too many and the whole
+            // world renders upside down.
+            configuration.generateFlippedRasterizationRateMaps = false
         }
         print("[xr] layer defaults: quality \(capabilities.defaultRenderQuality.rawValue), "
               + "minimumNear \(capabilities.supportedMinimumNearPlaneDistance)m")
