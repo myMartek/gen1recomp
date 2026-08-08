@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..aa0eac4
+index 0000000..dfed06f
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2019 @@
+@@ -0,0 +1,2022 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -2497,7 +2497,10 @@ index 0000000..aa0eac4
 +		frames++;
 +		CFTimeInterval now = CACurrentMediaTime();
 +		if (last == 0) last = now;
-+		if (now - last >= 1.0)
++		// Every ten seconds, not every one. A line a second for a session's
++		// length is enough traffic for the visionOS simulator to quarantine the
++		// app -- and a frame rate is watched in tens of seconds anyway.
++		if (now - last >= 10.0)
 +		{
 +			printf("[xr] %.1f submitted fps\n", frames / (now - last));
 +			fflush(stdout);
