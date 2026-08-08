@@ -77,6 +77,31 @@ struct GRLauncherView: View {
             // with no window, every time.
             model.markImmersiveSessionEnded()
             model.wantsImmersiveOnLaunch = false
+
+            // A way in without hands, for automated looking-at.
+            //
+            // Off unless something asks for it by name -- pass
+            // `-GRAutoImmersive YES` on the launch command line -- so nothing
+            // about the ordinary run changes. It exists because the one thing
+            // that cannot be checked from a terminal is what the headset
+            // SHOWS, and in the simulator it can be: boot, enter, screenshot.
+            // Without it every look costs somebody putting a headset on.
+            if UserDefaults.standard.bool(forKey: "GRAutoImmersive") {
+                // Play, not merely open. Opening the space alone leaves LOVE
+                // with no world, so nothing ever claims the frame loop and the
+                // space sits empty -- which looks exactly like a broken
+                // renderer and is not one.
+                //
+                // Waits for the first snapshot, because the version list is
+                // what says which game has a ROM.
+                for _ in 0..<60 where !shell.hasState {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+                let want = UserDefaults.standard.string(forKey: "GRAutoVersion")
+                let game = shell.games.first { $0.id == want }
+                    ?? shell.games.first { $0.ready }
+                if let game { play(game.id) }
+            }
         }
     }
 

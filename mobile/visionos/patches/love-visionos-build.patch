@@ -885,10 +885,10 @@ index 0000000..6d66d91
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..dfed06f
+index 0000000..033329d
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2022 @@
+@@ -0,0 +1,2041 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -1933,7 +1933,26 @@ index 0000000..dfed06f
 +	// 90 Hz compositor that cadence explicitly. The old value 2 repeated every
 +	// client frame twice in addition to its first display, yielding only 30 new
 +	// images/s and the visible trail on head turns.
++	//
++	// The SIMULATOR gets a much slower cadence and a smaller drawable. It draws
++	// two eyes of several megapixels each on the Mac's GPU with no headset
++	// silicon underneath, and the immersive space was being SIGKILLed by the
++	// system with the app's own main thread sitting idle in its run loop --
++	// the signature of a watchdog or resource kill rather than a fault. This
++	// is a debugging surface, not a play surface: a quarter of the frames and
++	// a smaller image are a fair trade for being able to look at the thing at
++	// all.
++#if TARGET_OS_SIMULATOR
++	cp_layer_renderer_set_minimum_frame_repeat_count(g_layer, 4);
++	// NO render quality here. The simulator reports its default as NaN --
++	// it has no such setting -- and asking for one aborts the process inside
++	// cp_layer_renderer_set_render_quality with __BUG_IN_CLIENT__. That abort
++	// was mistaken for "the simulator kills immersive apps"; it was this line.
++	printf("[xr] simulator: frame repeat 4\n");
++	fflush(stdout);
++#else
 +	cp_layer_renderer_set_minimum_frame_repeat_count(g_layer, 1);
++#endif
 +	// Quality values above the old ~0.52 default are valid once the layer is
 +	// foveated. The final pass consumes its eye-tracked rate maps below.
 +	//
