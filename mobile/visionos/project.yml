@@ -35,6 +35,17 @@ settings:
     # the correct and only useful target on an Apple Silicon Mac.
     ARCHS: arm64
     XROS_DEPLOYMENT_TARGET: "26.0"
+    # Xcode 26 builds Debug configurations as a stub that dlopens the real code
+    # from gen1recomp.debug.dylib, so SwiftUI Previews can be injected. Running
+    # the app that way produced a launcher window with its chrome and NOTHING
+    # inside it, while the very same source built by scripts/build_visionos.sh
+    # drew correctly -- a difference that costs an evening to find, because
+    # nothing about it looks like a build setting.
+    #
+    # Off, so that pressing Run in Xcode and running the script give the same
+    # binary. Previews are not something this project can use anyway: its views
+    # need a booted LOVE behind them.
+    ENABLE_DEBUG_DYLIB: NO
     SWIFT_VERSION: "5.0"
     CLANG_CXX_LANGUAGE_STANDARD: "c++17"
     CLANG_CXX_LIBRARY: "libc++"
