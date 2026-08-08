@@ -90,7 +90,12 @@ end
 -- Open the editor on a launcher save row.  The version's cache has to be
 -- mounted before the editor's Data:load runs, or a Blue save would be edited
 -- against Red's species/item tables.
-local function openEditor(version, slotId)
+-- `headless` opens it WITHOUT taking the screen: visionOS draws the editor in
+-- SwiftUI (src/core/NativeEditor.lua publishes what it draws from), so the
+-- editor's own immediate-mode UI must not run. Everything else -- mounting the
+-- version's cache, building the catalogs, loading the file -- is identical,
+-- because it is the same editor either way.
+local function openEditor(version, slotId, headless)
   local SaveData = require("src.core.SaveData")
   local path = SaveData.slotDiskPath(version, slotId)
   if not path then
@@ -107,12 +112,13 @@ local function openEditor(version, slotId)
   editorVersion = version
   editorHost = Importer
   Importer = nil
-  editorMode = true
-  resizeForEditor()
+  editorMode = not headless
+  if not headless then resizeForEditor() end
   addEditorRequirePath()
   EditorApp = require("App")
   EditorApp.load(path, { version = version, slotId = slotId, embedded = true,
                          onClose = function() closeEditor() end })
+  if headless then require("src.core.NativeEditor").attach(EditorApp) end
 end
 
 -- Back to the launcher.  Everything the editor mounted or cached has to come
@@ -122,6 +128,7 @@ end
 function closeEditor()
   local version = editorVersion
   editorMode = false
+  require("src.core.NativeEditor").detach()
   if EditorApp and EditorApp.unload then EditorApp.unload() end
   EditorApp = nil
   if version then
@@ -131,6 +138,10 @@ function closeEditor()
   editorVersion = nil
   restoreWindow()
   Importer = editorHost
+  -- visionOS: the launcher is the SwiftUI window, and it has been standing
+  -- down for as long as the editor was up. Hand it back with the slot list
+  -- re-read -- badges and play time are exactly what editing changes.
+  NativeShell.resumeLauncher()
   editorHost = nil
   if Importer and version and Importer.savesChanged then
     Importer:savesChanged(version)
@@ -265,7 +276,9 @@ function love.load(args)
   -- focus and read aloud.  src/core/NativeShell.lua publishes what the shell
   -- needs and boots what it picks -- it does not reimplement any of it.
   if NativeShell.applies() then
-    NativeShell.begin(bootGame)
+    NativeShell.begin(bootGame, function(v, slot)
+      openEditor(v, slot, true)
+    end)
     return
   end
 
@@ -285,8 +298,70 @@ function love.load(args)
   })
 end
 
+-- ------- the flat window's pointer, on visionOS
+--
+-- SDL owns no window in this app, so love.mousepressed, love.mousemoved and
+-- love.textinput are never called and love.mouse.getPosition never moves. The
+-- SwiftUI window queues its drag into love.xr instead (love_visionos_pointer),
+-- and this hands it to the same callbacks a desktop mouse would.
+--
+-- Only while the editor is up. It is the one screen here that is ALL pointer:
+-- the game is played with a controller, the launcher is SwiftUI's own, and
+-- feeding taps to either would be inventing input they never asked for.
+--
+-- love.mouse.getPosition is shimmed rather than worked around because App uses
+-- it for hover, and a hover that never moves makes every button look dead.
+local xrPointer = { x = -1, y = -1, down = false }
+
+local function pumpXrInput()
+  if not (love.xr and love.xr.input) then return end
+  local ok, ev = pcall(love.xr.input)
+  if not (ok and type(ev) == "table") then return end
+
+  for _, p in ipairs(ev.pointer or {}) do
+    xrPointer.x, xrPointer.y = p.x, p.y
+    if p.phase == "down" then
+      xrPointer.down = true
+      if EditorApp.mousepressed then EditorApp.mousepressed(p.x, p.y, 1) end
+    elseif p.phase == "up" then
+      xrPointer.down = false
+      if EditorApp.mousereleased then EditorApp.mousereleased(p.x, p.y, 1) end
+    elseif EditorApp.mousemoved then
+      EditorApp.mousemoved(p.x, p.y)
+    end
+  end
+
+  if (ev.scroll or 0) ~= 0 and EditorApp.wheelmoved then
+    EditorApp.wheelmoved(0, ev.scroll)
+  end
+  for _, t in ipairs(ev.text or {}) do
+    if EditorApp.textinput then EditorApp.textinput(t) end
+  end
+  for _, k in ipairs(ev.keys or {}) do
+    if EditorApp.keypressed then EditorApp.keypressed(k) end
+  end
+end
+
+local realGetPosition = love.mouse and love.mouse.getPosition
+if love.xr and love.mouse then
+  love.mouse.getPosition = function()
+    if editorMode and xrPointer.x >= 0 then return xrPointer.x, xrPointer.y end
+    return realGetPosition()
+  end
+  local realIsDown = love.mouse.isDown
+  if realIsDown then
+    love.mouse.isDown = function(...)
+      if editorMode then return xrPointer.down end
+      return realIsDown(...)
+    end
+  end
+end
+
 function love.update(dt)
-  if editorMode then return EditorApp.update(dt) end
+  if editorMode then
+    pumpXrInput()
+    return EditorApp.update(dt)
+  end
   if TouchEditor then return TouchEditor.update(dt) end
   if Importer then return Importer:update(dt) end
   -- Only while the native launcher is up: it clears its own flag the moment

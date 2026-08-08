@@ -50,6 +50,7 @@ local TITLES = { red = "Pokémon Red", blue = "Pokémon Blue", yellow = "Pokémo
 local POLL_INTERVAL = 0.1
 
 local bootGame = nil
+local editSave = nil
 local timer = 0
 local lastPublished = nil
 -- The file the last export produced, for the window to hand to a share sheet.
@@ -283,6 +284,12 @@ local function snapshot()
 
   return { games = games, mods = mods, settings = settingsSnapshot(),
            exportFile = exportFile,
+           -- Whether the save editor owns the screen. Said out loud rather
+           -- than inferred: while it is up this module stands down and stops
+           -- publishing, so the window's only other way to know would be to
+           -- watch the file's timestamp -- and publish() writes only on
+           -- change, so that timestamp says nothing at all.
+           editing = NativeShell.editing == true,
            ready = true }
 end
 
@@ -299,6 +306,11 @@ end
 -- ---------------------------------------------------------------- commands
 
 local function applyCommand(cmd)
+  -- The editor's own verbs first. It publishes its own snapshot and answers
+  -- its own commands; this module only decides that they are not its
+  -- business.
+  if require("src.core.NativeEditor").command(cmd) then return end
+
   local LauncherMods = require("src.mods.LauncherMods")
 
   if cmd.action == "setMod" and type(cmd.id) == "string" then
@@ -448,6 +460,32 @@ local function applyCommand(cmd)
     return
   end
 
+  -- THE SAVE EDITOR, on the slot the window picked.
+  --
+  -- It is the engine's own editor (tools/save-editor/), not a second one in
+  -- SwiftUI: the rules for what a legal save is live there, along with the
+  -- species tables and the XP curves, and a reimplementation across the
+  -- bridge would be a second answer to every one of those questions.
+  --
+  -- The shell stands down while it is up. The editor is modal by nature --
+  -- it owns the file the launcher lists -- and its Close is what brings the
+  -- window back (see main.lua's closeEditor).
+  if cmd.action == "editSlot" and type(cmd.version) == "string"
+     and type(cmd.slot) == "string" then
+    if editSave then
+      Logger.info(("native shell: editing %s %s"):format(cmd.version, cmd.slot))
+      -- The shell KEEPS RUNNING. The editor is headless here -- SwiftUI
+      -- draws it from src/core/NativeEditor.lua's snapshot -- so there is no
+      -- screen to hand over, and the channel this arrived on is the same one
+      -- its own commands come back down.
+      NativeShell.editing = true
+      editSave(cmd.version, cmd.slot)
+      lastPublished = nil
+      publish()
+    end
+    return
+  end
+
   if cmd.action == "toLauncher" then
     -- SILENCE WHILE THE WORLD IS CLOSED.
     --
@@ -525,8 +563,19 @@ function NativeShell.applies()
   return love.xr ~= nil
 end
 
-function NativeShell.begin(boot)
+-- Back from the editor, with the slot list re-read: the whole point of
+-- editing is that the row's badges and play time have changed.
+function NativeShell.resumeLauncher()
+  if not NativeShell.applies() then return end
+  NativeShell.editing = false
+  NativeShell.active = true
+  pcall(love.filesystem.remove, COMMAND_FILE)
+  publish()
+end
+
+function NativeShell.begin(boot, edit)
   bootGame = boot
+  editSave = edit
   NativeShell.active = true
   -- A stale command from the last run must not boot the game before the
   -- player has chosen anything.
@@ -567,11 +616,15 @@ function NativeShell.update(dt)
   if cmd and not NativeShell.active then
     local allowed = cmd.action == "toLauncher" or cmd.action == "setOption"
                     or cmd.action == "setDebug" or cmd.action == "boot"
+                    or (type(cmd.action) == "string" and cmd.action:sub(1, 3) == "ed.")
     if not allowed then cmd = nil end
   end
   if cmd then applyCommand(cmd) end
   -- After the command, so a toggle is reflected in the same tick it lands.
   if NativeShell.active then publish() end
+  -- The editor publishes on its own clock: its snapshot is far larger than
+  -- this one and it only exists while a save is open.
+  require("src.core.NativeEditor").update(dt)
 end
 
 -- Nothing to draw. The window is the launcher, and the virtual screen behind

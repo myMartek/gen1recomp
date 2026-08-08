@@ -286,7 +286,17 @@ function App.close()
   return true
 end
 
-local function finishClose()
+local finishClose  -- forward: App.finishClose is declared above its body
+
+-- Public because App.draw is not the only face any more: the visionOS build
+-- runs this editor headless behind a SwiftUI one (src/core/NativeEditor.lua),
+-- and there nothing ever draws -- so the frame that would have noticed
+-- _closeRequested and handed the launcher back never comes.
+function App.finishClose()
+  if S and S._closeRequested then finishClose() end
+end
+
+function finishClose()
   local embedded, onClose = S.embedded, S.onClose
   S._closeRequested = false
   if embedded and onClose then

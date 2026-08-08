@@ -125,6 +125,7 @@ private struct GRShellState: Decodable {
     let mods: [GRMod]
     let settings: [GRSetting]?
     let exportFile: String?
+    let editing: Bool?
 }
 
 @MainActor
@@ -143,6 +144,14 @@ final class GRShell {
     private(set) var hasState = false
     /// Set once an export has been written; the launcher watches it.
     private(set) var exportFile: String?
+
+    /// True while the engine's save editor owns the screen.
+    ///
+    /// Read from the snapshot rather than assumed here, so the window follows
+    /// the engine even when something other than this view asked for it -- a
+    /// command written straight into the channel, which is how the editor is
+    /// driven under test.
+    private(set) var editing = false
 
     private var pollTask: Task<Void, Never>?
 
@@ -183,6 +192,8 @@ final class GRShell {
               let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode(GRShellState.self, from: data)
         else { return }
+
+        if (decoded.editing ?? false) != editing { editing = decoded.editing ?? false }
 
         // Assigned only on change: @Observable republishes on every write, and
         // an identical list ten times a second would rebuild the view for
@@ -316,6 +327,15 @@ final class GRShell {
         }
         send(["action": "importSlot", "version": version, "file": name])
         return true
+    }
+
+    /// Hands a slot to the engine's own save editor. The picture in the
+    /// launcher window becomes the editor, and its Close brings this back.
+    func editSlot(version: String, slot: String) {
+        // No optimism here. The snapshot is the authority on whether the
+        // editor has the screen, and guessing ahead of it would show an empty
+        // picture for the one case that matters -- the command not arriving.
+        send(["action": "editSlot", "version": version, "slot": slot])
     }
 
     func newSlot(version: String) {

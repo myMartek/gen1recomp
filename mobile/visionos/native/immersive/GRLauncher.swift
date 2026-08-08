@@ -47,7 +47,9 @@ struct GRLauncherView: View {
 
     var body: some View {
         Group {
-            if model.bootedVersion == nil {
+            if shell.editing {
+                editor
+            } else if model.bootedVersion == nil {
                 picker
             } else {
                 player
@@ -257,6 +259,11 @@ struct GRLauncherView: View {
                             // itself. Export is NOT in here as well as beside
                             // it -- one action, one place.
                             Menu {
+                                if slot.exists {
+                                    Button {
+                                        shell.editSlot(version: game.id, slot: slot.id)
+                                    } label: { Label("Edit save…", systemImage: "slider.horizontal.3") }
+                                }
                                 Button(role: .destructive) {
                                     pendingDelete = (game.id, slot.id)
                                 } label: { Label("Delete", systemImage: "trash") }
@@ -390,6 +397,17 @@ struct GRLauncherView: View {
             }
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         }
+    }
+
+    // MARK: - The save editor
+    //
+    // Native, and reading from the engine. The editor's own immediate-mode UI
+    // is not drawn here at all -- it runs headless and publishes what it
+    // holds (src/core/NativeEditor.lua), so the rules stay in one place and
+    // the face is a real window: system placement, focus, text fields and
+    // VoiceOver, none of which a picture of a tool on a quad can offer.
+    private var editor: some View {
+        GREditorView()
     }
 
     // MARK: - Phase 2: the game

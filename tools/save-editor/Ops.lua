@@ -426,6 +426,38 @@ function Ops.deposit(S)
 end
 
 -- ------------------------------------------------------------------ items
+-- ------- the two names on the trainer card
+--
+-- Gen 1 stores them in a 11-character text buffer, so anything longer simply
+-- cannot be written back; the engine's own text encoder is what draws them, so
+-- the set of legal characters is whatever it knows. Upper-cased and trimmed
+-- here rather than refused: a lower-case name is a typo, not a decision, and
+-- the game has no lower case to draw it with.
+Ops.NAME_MAX = 10
+
+local function cleanName(value)
+  value = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""):upper()
+  return value:sub(1, Ops.NAME_MAX)
+end
+
+function Ops.setPlayerName(S, value)
+  local want = cleanName(value)
+  if want == "" then return Ops.say(S, "A name cannot be empty") end
+  S.save.player = S.save.player or {}
+  if want == S.save.player.name then return Ops.say(S, "Already " .. want) end
+  S.save.player.name = want
+  return Ops.mark(S, "Player is now " .. want)
+end
+
+function Ops.setRivalName(S, value)
+  local want = cleanName(value)
+  if want == "" then return Ops.say(S, "A name cannot be empty") end
+  S.save.player = S.save.player or {}
+  if want == S.save.player.rival then return Ops.say(S, "Already " .. want) end
+  S.save.player.rival = want
+  return Ops.mark(S, "Rival is now " .. want)
+end
+
 function Ops.addMoney(S, delta)
   local want = clamp((S.save.money or 0) + delta, 0, Ops.MONEY_MAX)
   if want == S.save.money then

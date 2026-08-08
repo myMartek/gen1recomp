@@ -899,10 +899,10 @@ index 0000000..b9b1c1e
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..575a84e
+index 0000000..dcc3c56
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2514 @@
+@@ -0,0 +1,2651 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -936,6 +936,7 @@ index 0000000..575a84e
 +#include <cstdio>   // TEMPORARY: lifecycle logging, see the [xr] prints below
 +#include <atomic>
 +#include <mutex>
++#include <string>
 +#include <cstdlib>
 +#include <unistd.h>
 +
@@ -3381,11 +3382,147 @@ index 0000000..575a84e
 +	return 1;
 +}
 +
++// ------------------------------------------------- pointer, wheel, keyboard
++//
++// SDL owns no window in this app, so nothing reaches LOVE's own input path:
++// the flat window has always been a live picture of a game that could not be
++// touched. The save editor is the first thing here that is ALL pointer -- it
++// has no gamepad affordance at all -- so the picture has to become clickable.
++//
++// A queue rather than a callback: the SwiftUI gesture runs on the main thread
++// and LOVE runs on its own, and calling into Lua from the wrong one is how a
++// renderer picks up a lua_State it does not own. Both sides touch nothing but
++// this small buffer, under one lock.
++//
++// Coordinates arrive already in VIRTUAL SCREEN PIXELS. Swift does that
++// conversion because Swift is what knows the view's size and the aspect-fit
++// crop the flat shader applies; doing it here would mean duplicating that
++// mapping in a second place, where it could drift.
++namespace
++{
++struct PointerEvent { float x, y; int phase; };   // 0 move, 1 down, 2 up
++
++std::mutex g_inputMutex;
++PointerEvent g_ptrQueue[64];
++int   g_ptrCount = 0;
++float g_ptrX = 0, g_ptrY = 0;
++float g_scrollY = 0;
++std::string g_textQueue[32];
++int g_textCount = 0;
++std::string g_keyQueue[32];
++int g_keyCount = 0;
++}
++
++extern "C" void love_visionos_pointer(float x, float y, int phase)
++{
++	std::lock_guard<std::mutex> lock(g_inputMutex);
++	g_ptrX = x;
++	g_ptrY = y;
++	// Drops the OLDEST on overflow, and never the newest: a lost move is a
++	// slightly coarser drag, but a lost "up" is a button that stays held.
++	if (g_ptrCount >= 64)
++	{
++		for (int i = 1; i < 64; i++) g_ptrQueue[i - 1] = g_ptrQueue[i];
++		g_ptrCount = 63;
++	}
++	g_ptrQueue[g_ptrCount++] = { x, y, phase };
++}
++
++extern "C" void love_visionos_scroll(float dy)
++{
++	std::lock_guard<std::mutex> lock(g_inputMutex);
++	g_scrollY += dy;
++}
++
++extern "C" void love_visionos_text(const char *utf8)
++{
++	if (utf8 == nullptr || *utf8 == '\0') return;
++	std::lock_guard<std::mutex> lock(g_inputMutex);
++	if (g_textCount < 32) g_textQueue[g_textCount++] = utf8;
++}
++
++extern "C" void love_visionos_key(const char *name)
++{
++	if (name == nullptr || *name == '\0') return;
++	std::lock_guard<std::mutex> lock(g_inputMutex);
++	if (g_keyCount < 32) g_keyQueue[g_keyCount++] = name;
++}
++
++/**
++ * Everything queued since the last call, drained: pointer events, wheel
++ * notches, typed text and named keys.
++ *
++ *   { pointer = { {x=,y=,phase="down"|"up"|"move"}, ... },
++ *     x =, y =,            -- where the pointer is now
++ *     scroll =,            -- wheel notches, summed
++ *     text = { "a", ... }, keys = { "backspace", ... } }
++ */
++static int w_input(lua_State *L)
++{
++	PointerEvent evs[64];
++	int n = 0;
++	float x, y, scroll;
++	std::string texts[32], keys[32];
++	int nText = 0, nKey = 0;
++	{
++		std::lock_guard<std::mutex> lock(g_inputMutex);
++		n = g_ptrCount;
++		for (int i = 0; i < n; i++) evs[i] = g_ptrQueue[i];
++		g_ptrCount = 0;
++		x = g_ptrX; y = g_ptrY;
++		scroll = g_scrollY; g_scrollY = 0;
++		nText = g_textCount;
++		for (int i = 0; i < nText; i++) texts[i] = g_textQueue[i];
++		g_textCount = 0;
++		nKey = g_keyCount;
++		for (int i = 0; i < nKey; i++) keys[i] = g_keyQueue[i];
++		g_keyCount = 0;
++	}
++
++	lua_createtable(L, 0, 5);
++
++	lua_createtable(L, n, 0);
++	for (int i = 0; i < n; i++)
++	{
++		lua_createtable(L, 0, 3);
++		lua_pushnumber(L, evs[i].x); lua_setfield(L, -2, "x");
++		lua_pushnumber(L, evs[i].y); lua_setfield(L, -2, "y");
++		lua_pushstring(L, evs[i].phase == 1 ? "down"
++		                : evs[i].phase == 2 ? "up" : "move");
++		lua_setfield(L, -2, "phase");
++		lua_rawseti(L, -2, i + 1);
++	}
++	lua_setfield(L, -2, "pointer");
++
++	lua_pushnumber(L, x);      lua_setfield(L, -2, "x");
++	lua_pushnumber(L, y);      lua_setfield(L, -2, "y");
++	lua_pushnumber(L, scroll); lua_setfield(L, -2, "scroll");
++
++	lua_createtable(L, nText, 0);
++	for (int i = 0; i < nText; i++)
++	{
++		lua_pushstring(L, texts[i].c_str());
++		lua_rawseti(L, -2, i + 1);
++	}
++	lua_setfield(L, -2, "text");
++
++	lua_createtable(L, nKey, 0);
++	for (int i = 0; i < nKey; i++)
++	{
++		lua_pushstring(L, keys[i].c_str());
++		lua_rawseti(L, -2, i + 1);
++	}
++	lua_setfield(L, -2, "keys");
++
++	return 1;
++}
++
 +static const luaL_Reg functions[] =
 +{
 +	{ "accessories", w_accessories },
 +	{ "sticks",      w_sticks      },
 +	{ "buttons",     w_buttons     },
++	{ "input",       w_input       },
 +	{ "available",   w_available   },
 +	{ "supported",   w_supported   },
 +	{ "claim",       w_claim       },

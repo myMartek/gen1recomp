@@ -80,4 +80,19 @@ void love_visionos_endHostFrame(void);
 /// This is the only reliable answer to "where do I put a ROM".
 const char *love_visionos_saveDirectory(void);
 
+/// Pointer, wheel and keyboard, for the flat window.
+///
+/// SDL owns no window here, so none of LOVE's own input paths are connected --
+/// the picture has always been live and untouchable. These queue into love.xr
+/// instead, and Lua drains them. Coordinates are VIRTUAL SCREEN PIXELS: the
+/// caller is what knows the view's size and the aspect-fit crop the flat
+/// shader applies, and converting there keeps that mapping in one place
+/// rather than in two that can drift.
+///
+/// phase: 0 = moved, 1 = pressed, 2 = released.
+void love_visionos_pointer(float x, float y, int phase);
+void love_visionos_scroll(float dy);
+void love_visionos_text(const char *utf8);
+void love_visionos_key(const char *name);
+
 #endif /* GEN1RECOMP_BRIDGING_HEADER_H */

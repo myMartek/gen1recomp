@@ -4,15 +4,70 @@
 //  flat and VR are two views of one frame, not two renderers. Not pressing
 //  "Enter VR" is what "play in 2D" means.
 //
-//  What this does NOT give you is input. In this app SDL owns no window, so
-//  LÖVE receives no touches or clicks -- the picture is live, the game is not
-//  yet playable here. That is the input work, and until it lands the separate
-//  flat build (Pocket Sim 2D) is the one to actually play.
+//  Input reaches it too, now. SDL owns no window in this app, so none of
+//  LÖVE's own paths are connected; the drag below queues into love.xr and Lua
+//  drains it (love_visionos_pointer). That is what makes the save editor
+//  usable here -- it is all pointer and has no gamepad affordance at all.
+//
+//  A DragGesture with minimumDistance 0 rather than a tap: the editor's
+//  sliders and its map browser want the whole press-move-release, and a tap
+//  gesture reports only the end of one.
 
 import MetalKit
 import SwiftUI
 
-struct GRScreenView: UIViewRepresentable {
+struct GRScreenView: View {
+
+    /// Whether the current drag has already sent its press. SwiftUI reports a
+    /// drag as a stream of changes with no separate "began", so the first one
+    /// is the press and the rest are moves.
+    @State private var pressed = false
+
+    var body: some View {
+        GeometryReader { geo in
+            GRScreenSurface()
+                // Without this the gesture only lands on drawn pixels, and the
+                // letterbox bars beside a portrait game are not drawn pixels.
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { v in
+                            guard let p = Self.virtualPoint(v.location, in: geo.size) else { return }
+                            love_visionos_pointer(Float(p.x), Float(p.y), pressed ? 0 : 1)
+                            pressed = true
+                        }
+                        .onEnded { v in
+                            // Falls back to the last in-bounds point rather
+                            // than dropping the release: a finger that leaves
+                            // the picture still let go of the button.
+                            let p = Self.virtualPoint(v.location, in: geo.size)
+                            love_visionos_pointer(Float(p?.x ?? -1), Float(p?.y ?? -1), 2)
+                            pressed = false
+                        }
+                )
+        }
+    }
+
+    /// A point in the view, in virtual-screen pixels -- or nil when it lands
+    /// on the letterbox. This inverts exactly what gr_flat_fragment does:
+    /// uv = (n - 0.5) * uvScale + 0.5, with the same uvScale GRScreenSurface
+    /// computes, so the pixel under the finger is the pixel under the cursor.
+    static func virtualPoint(_ p: CGPoint, in size: CGSize) -> CGPoint? {
+        guard let screen = GRLove.virtualScreen, size.width > 0, size.height > 0
+        else { return nil }
+        let src = Float(screen.width) / Float(screen.height)
+        let dst = Float(size.width) / Float(size.height)
+        let scale = src > dst ? SIMD2<Float>(1.0, src / dst)
+                              : SIMD2<Float>(dst / src, 1.0)
+        let n = SIMD2<Float>(Float(p.x / size.width), Float(p.y / size.height))
+        let uv = (n - 0.5) * scale + 0.5
+        guard uv.x >= 0, uv.x <= 1, uv.y >= 0, uv.y <= 1 else { return nil }
+        return CGPoint(x: CGFloat(uv.x) * CGFloat(screen.width),
+                       y: CGFloat(uv.y) * CGFloat(screen.height))
+    }
+}
+
+struct GRScreenSurface: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
