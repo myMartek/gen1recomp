@@ -899,10 +899,10 @@ index 0000000..b9b1c1e
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..ba0a4a3
+index 0000000..575a84e
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2464 @@
+@@ -0,0 +1,2514 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -3332,10 +3332,60 @@ index 0000000..ba0a4a3
 +	return 1;
 +}
 +
++/**
++ * The Sense controllers' BUTTONS: { {grip=,trigger=,menu=,a=,b=}, {...} },
++ * left first.
++ *
++ * Named against what the hardware said rather than against Apple's vocabulary.
++ * logController printed each half's whole element list on connect, and a Sense
++ * controller resolves exactly ten of them:
++ *
++ *   btn:Grip  btn:Trigger  btn:Button A  btn:Button B  btn:Button Menu
++ *   btn:Thumbstick {Up,Down,Left,Right,Button}
++ *
++ * There is NO shoulder element -- that name only appears on the MFi pad, which
++ * lists Left Shoulder and Right Shoulder beside a second thumbstick. So what a
++ * player calls L1/R1 on this hardware is `Grip`, the middle-finger squeeze,
++ * and it is the only squeeze the profile offers. `Button Menu` is the small
++ * pill above the stick: Create on the left half, Options on the right.
++ *
++ * The stick is deliberately absent -- love.xr.sticks already answers for it,
++ * and two readers of one element is two places to fix a deadzone.
++ */
++static bool pressed(GCPhysicalInputProfile *p, NSString *name)
++{
++	GCControllerButtonInput *b = (p != nil) ? p.buttons[name] : nil;
++	return b != nil && b.isPressed;
++}
++
++static int w_buttons(lua_State *L)
++{
++	lua_createtable(L, 2, 0);
++	for (int i = 0; i < 2; i++)
++	{
++		lua_createtable(L, 0, 5);
++		GCController *c = (GCController *) g_padDevice[i];
++		if ([c isKindOfClass:[GCController class]])
++		{
++			GCPhysicalInputProfile *p = c.physicalInputProfile;
++			GCControllerButtonInput *t = (p != nil) ? p.buttons[@"Trigger"] : nil;
++
++			lua_pushboolean(L, pressed(p, @"Grip"));        lua_setfield(L, -2, "grip");
++			lua_pushboolean(L, pressed(p, @"Button Menu")); lua_setfield(L, -2, "menu");
++			lua_pushboolean(L, pressed(p, @"Button A"));    lua_setfield(L, -2, "a");
++			lua_pushboolean(L, pressed(p, @"Button B"));    lua_setfield(L, -2, "b");
++			lua_pushnumber(L, (t != nil) ? t.value : 0.0);  lua_setfield(L, -2, "trigger");
++		}
++		lua_rawseti(L, -2, i + 1);
++	}
++	return 1;
++}
++
 +static const luaL_Reg functions[] =
 +{
 +	{ "accessories", w_accessories },
 +	{ "sticks",      w_sticks      },
++	{ "buttons",     w_buttons     },
 +	{ "available",   w_available   },
 +	{ "supported",   w_supported   },
 +	{ "claim",       w_claim       },

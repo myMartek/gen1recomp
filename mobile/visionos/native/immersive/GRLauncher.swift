@@ -14,6 +14,7 @@
 //  top of a running game would be worse than no window at all.
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct GRLauncherView: View {
 
@@ -26,8 +27,21 @@ struct GRLauncherView: View {
     @State private var shell = GRShell()
     @State private var loveStatus = "starting…"
     @State private var showRomPicker = false
+    /// Which game a save import is for. Its picker hangs on the saves section
+    /// rather than here -- SwiftUI presents ONE .fileImporter per view, and a
+    /// second one beside the ROM picker simply never appeared.
+    /// Which game a picked save belongs to, and whether the picker is up.
+    /// These are deliberately two variables: SwiftUI clears the isPresented
+    /// binding on dismissal BEFORE running the completion handler, so a target
+    /// derived from that binding is always nil by the time the file arrives.
+    @State private var importInto: String?
+    @State private var showSavePicker = false
     @State private var romMessage = ""
     @State private var pads = GRControllers()
+    /// The save the player asked to export; presenting the share sheet.
+    @State private var exportURL: URL?
+    /// version + slot awaiting a yes. Deleting a save cannot be undone.
+    @State private var pendingDelete: (String, String)?
     /// nil means "follow the default" -- see `selected`.
     @State private var selectedID: String?
 
@@ -40,6 +54,29 @@ struct GRLauncherView: View {
             }
         }
         .padding(24)
+        .onChange(of: shell.exportFile) { _, file in
+            guard let file, !file.isEmpty else { return }
+            exportURL = URL(fileURLWithPath: file)
+        }
+        .sheet(item: Binding(
+            get: { exportURL.map { GRExportItem(url: $0) } },
+            set: { if $0 == nil { exportURL = nil } }
+        )) { item in
+            GRShareSheet(url: item.url)
+        }
+        .confirmationDialog("Delete this save?",
+                            isPresented: Binding(
+                                get: { pendingDelete != nil },
+                                set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                if let (v, s) = pendingDelete { shell.deleteSlot(version: v, slot: s) }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("This cannot be undone.")
+        }
         .fileImporter(isPresented: $showRomPicker,
                       allowedContentTypes: GRRomImport.contentTypes,
                       allowsMultipleSelection: false) { result in
@@ -144,6 +181,13 @@ struct GRLauncherView: View {
                     if !shell.settings.isEmpty { settingsList }
                 }
 
+                if !shell.debugToast.isEmpty {
+                    Text(shell.debugToast)
+                        .font(.callout.weight(.medium))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.thinMaterial, in: Capsule())
+                }
+
                 if !romMessage.isEmpty {
                     Text(romMessage)
                         .font(.footnote)
@@ -209,6 +253,27 @@ struct GRLauncherView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
+                            // Housekeeping, out of the way of the choice
+                            // itself. Export is NOT in here as well as beside
+                            // it -- one action, one place.
+                            Menu {
+                                Button(role: .destructive) {
+                                    pendingDelete = (game.id, slot.id)
+                                } label: { Label("Delete", systemImage: "trash") }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .menuStyle(.borderlessButton)
+
+                            if slot.exists {
+                                Button {
+                                    shell.exportSlot(version: game.id, slot: slot.id)
+                                } label: {
+                                    Image(systemName: "square.and.arrow.up")
+                                }
+                                .buttonStyle(.borderless)
+                            }
                         }
                         .contentShape(Rectangle())
                     }
@@ -218,9 +283,25 @@ struct GRLauncherView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                 }
 
-                Button("New save") { shell.newSlot(version: game.id) }
-                    .font(.callout)
+                HStack(spacing: 16) {
+                    Button("New save") { shell.newSlot(version: game.id) }
+                    Button("Import save…") {
+                        importInto = game.id
+                        showSavePicker = true
+                    }
+                }
+                .font(.callout)
             }
+        }
+        .fileImporter(isPresented: $showSavePicker,
+                      allowedContentTypes: [.data],
+                      allowsMultipleSelection: false) { result in
+            let version = importInto
+            importInto = nil
+            guard let version, case .success(let urls) = result,
+                  let url = urls.first else { return }
+            romMessage = shell.importSlot(version: version, from: url)
+                ? "Save imported." : "That save could not be read."
         }
     }
 
@@ -422,4 +503,31 @@ struct GRLauncherView: View {
             model.wantsImmersiveOnLaunch = false
         }
     }
+}
+
+// MARK: - Exporting a save
+
+/// A URL that can be a `.sheet(item:)` -- which needs identity, and a URL on
+/// its own does not carry one.
+struct GRExportItem: Identifiable {
+    let url: URL
+    var id: String { url.path }
+}
+
+/// The system's own share sheet, which is the whole export.
+///
+/// Nothing is packaged or converted on the way out: the file handed over is
+/// the save exactly as the game writes it, so what comes back through Import
+/// is a file the game already knows how to read. Saving it to Files, mailing
+/// it, or dropping it on a Mac are all the same gesture to the player, and
+/// none of them is ours to build.
+struct GRShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController,
+                                context: Context) {}
 }

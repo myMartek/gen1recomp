@@ -28,6 +28,9 @@ struct GRSlot: Identifiable, Equatable, Decodable {
     let badges: Int?
     let timeText: String?
     let dexCount: Int?
+    /// Where the save file sits, for the share sheet. Nil for a slot that has
+    /// never been written.
+    let path: String?
 
     /// The same meta line the Lua launcher prints under a save row.
     var summary: String {
@@ -121,11 +124,16 @@ private struct GRShellState: Decodable {
     let games: [GRGame]
     let mods: [GRMod]
     let settings: [GRSetting]?
+    let exportFile: String?
 }
 
 @MainActor
 @Observable
 final class GRShell {
+
+    /// The one shell the app runs with, so lifecycle code that is not a view
+    /// can reach it. Set on init; there is never a second.
+    static weak var shared: GRShell?
 
     private(set) var games: [GRGame] = []
     private(set) var mods: [GRMod] = []
@@ -133,8 +141,12 @@ final class GRShell {
     /// False until the first snapshot lands, which is what tells the view to
     /// say "starting…" rather than "no games found".
     private(set) var hasState = false
+    /// Set once an export has been written; the launcher watches it.
+    private(set) var exportFile: String?
 
     private var pollTask: Task<Void, Never>?
+
+    init() { GRShell.shared = self }
 
     private var saveDirectory: URL? {
         let path = GRLove.saveDirectory
@@ -179,6 +191,7 @@ final class GRShell {
         if decoded.mods != mods { mods = decoded.mods }
         let incoming = decoded.settings ?? []
         if incoming != settings { settings = incoming }
+        if decoded.exportFile != exportFile { exportFile = decoded.exportFile }
         if !hasState { hasState = true }
     }
 
@@ -226,6 +239,83 @@ final class GRShell {
     /// the player would have made in the game, made a screen earlier.
     func setSlot(version: String, slot: String) {
         send(["action": "setSlot", "version": version, "slot": slot])
+        countDebugTap(slot)
+    }
+
+    // ---------------------------------------------------------- debug gate
+
+    /// Shown briefly when the gate opens; the launcher renders it if set.
+    var debugToast: String = ""
+
+    private var tapSlot: String = ""
+    private var tapCount = 0
+    private var tapStarted = Date.distantPast
+
+    /// Ten presses on ONE save slot inside twenty seconds.
+    ///
+    /// The headset build hides every mod row -- they parameterise a look the
+    /// port has settled, and the mod is not optional here -- but hiding is not
+    /// deleting, and a port under development needs its knobs reachable. This
+    /// is the way back in: deliberate enough that nobody finds it by accident,
+    /// cheap enough to do while wearing the device.
+    private func countDebugTap(_ slot: String) {
+        let now = Date()
+        if slot != tapSlot || now.timeIntervalSince(tapStarted) > 20 {
+            tapSlot = slot
+            tapCount = 0
+            tapStarted = now
+        }
+        tapCount += 1
+        guard tapCount >= 10 else { return }
+        tapCount = 0
+        send(["action": "setDebug", "on": true])
+        debugToast = "Debug mode on"
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            self?.debugToast = ""
+        }
+    }
+
+    /// Stands the Lua launcher back up after immersion ends.
+    ///
+    /// The game keeps its place in memory and is simply not updated while the
+    /// shell is active; a later START boots it afresh, which is what the
+    /// launcher has always done.
+    func returnToLauncher() {
+        send(["action": "toLauncher"])
+    }
+
+    /// Asks for a slot as a vanilla .sav; the path arrives in the next
+    /// snapshot as `exportFile`, which the launcher then shares.
+    func exportSlot(version: String, slot: String) {
+        exportFile = nil
+        send(["action": "exportSlot", "version": version, "id": slot])
+    }
+
+    /// Removes a save. Destructive and unrecoverable, so the view asks first.
+    func deleteSlot(version: String, slot: String) {
+        send(["action": "deleteSlot", "version": version, "id": slot])
+    }
+
+    /// Takes a file the player picked and makes a save of it.
+    ///
+    /// Copied into LOVE's own save directory first, under a name of ours, so
+    /// the Lua side reads it through love.filesystem like everything else --
+    /// a security-scoped URL from the picker is not something it could open.
+    func importSlot(version: String, from url: URL) -> Bool {
+        guard let dir = saveDirectory else { return false }
+        let name = "import_\(version).sav"
+        let dest = dir.appending(path: name)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            try data.write(to: dest)
+        } catch {
+            return false
+        }
+        send(["action": "importSlot", "version": version, "file": name])
+        return true
     }
 
     func newSlot(version: String) {

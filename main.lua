@@ -291,7 +291,13 @@ function love.update(dt)
   if Importer then return Importer:update(dt) end
   -- Only while the native launcher is up: it clears its own flag the moment
   -- it boots a game, and from then on this is one dead branch per frame.
-  if NativeShell.active then return NativeShell.update(dt) end
+  -- The shell listens whether or not it is showing: its commands are how the
+  -- window changes a setting mid-game and how the Crown asks for the launcher
+  -- back. Only when it IS showing does it also take the frame.
+  if NativeShell.applies() then
+    NativeShell.update(dt)
+    if NativeShell.active then return end
+  end
 
   -- Scripted runs (autopilot / POKEPORT_DRIVER) observe and act exactly
   -- once per Game:update, so they must keep a 1:1 relationship with the

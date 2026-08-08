@@ -52,6 +52,8 @@ local POLL_INTERVAL = 0.1
 local bootGame = nil
 local timer = 0
 local lastPublished = nil
+-- The file the last export produced, for the window to hand to a share sheet.
+local exportFile = nil
 
 -- ---------------------------------------------------------------- settings
 --
@@ -121,6 +123,47 @@ local function buildSettings()
       colors[#colors + 1] = { value = m, label = tostring(PaletteFX.modeLabel(m)) }
     end
 
+    -- ON A HEADSET THERE IS ONE SETTING.
+    --
+    -- The rest of this list is about a flat window on a desk -- text speed,
+    -- battle style, palettes, frame caps -- and none of it is a decision
+    -- anybody wants to make while wearing a headset. What IS a decision is
+    -- where you stand: inside the world or above it. That is the voxel
+    -- pipeline's ladder, so the row reads and writes it directly rather than
+    -- a key of its own, and the in-game menu shows the same thing.
+    --
+    -- The mod itself has no row anywhere: on this build it is not optional.
+    if love.xr then
+      local Voxel = { FULL = 1, FIRST = 6 }   -- see lib/VoxelState ANGLE_LABELS
+      return {
+        {
+          id = "display", label = "View", default = Voxel.FIRST,
+          choices = {
+            { value = Voxel.FIRST, label = "First Person" },
+            { value = Voxel.FULL,  label = "Third Person" },
+          },
+          get = function(options)
+            local p = options.pipelines
+            return (p and p.voxel) or Voxel.FIRST
+          end,
+          set = function(options, value)
+            options.pipelines = options.pipelines or {}
+            options.pipelines.voxel = value
+            -- AND ON THE LIVE GAME, not only in the file.
+            --
+            -- Pipeline levels are read once, when a game loads. Written only
+            -- to disk, this row changed nothing anybody could see until the
+            -- next boot -- which is exactly what "I cannot really switch"
+            -- looks like from the launcher, where the game is sitting paused
+            -- behind the window rather than gone.
+            pcall(function()
+              require("src.render.Pipelines").setLevel("voxel", value)
+            end)
+          end,
+        },
+      }
+    end
+
     return {
       { id = "textSpeed", label = "Text speed", default = 3, choices = {
           { value = 1, label = "Fast" },
@@ -151,7 +194,7 @@ local function settingsSnapshot()
   options = okO and options or {}
   local out = {}
   for _, s in ipairs(buildSettings()) do
-    local v = options[s.id]
+    local v = s.get and s.get(options) or options[s.id]
     if v == nil then v = s.default end
     out[#out + 1] = {
       id = s.id, label = s.label, value = v, choices = s.choices,
@@ -189,6 +232,11 @@ local function snapshot()
         for _, s in ipairs(list) do
           local m = s.meta or {}
           slots[#slots + 1] = {
+            -- Where it lives on disk. The window exports by handing this file
+            -- to the system's own share sheet, so nothing has to be copied,
+            -- re-encoded or kept in step -- and an import is the same file
+            -- coming back.
+            path = (select(2, pcall(SaveData.slotDiskPath, v, s.id))),
             id = s.id,
             label = s.label,
             name = s.name,
@@ -227,7 +275,14 @@ local function snapshot()
     end
   end
 
+  -- NO MOD LIST ON A HEADSET. The launcher hides the whole section when it is
+  -- empty, and on this build the mod is not something to switch off -- the
+  -- port IS the mod. A toggle that must never be touched is worse than no
+  -- toggle: it invites the one press that empties the world.
+  if love.xr then mods = {} end
+
   return { games = games, mods = mods, settings = settingsSnapshot(),
+           exportFile = exportFile,
            ready = true }
 end
 
@@ -279,10 +334,132 @@ local function applyCommand(cmd)
     local SaveData = require("src.core.SaveData")
     local okO, options = pcall(SaveData.loadOptions)
     if okO and type(options) == "table" then
-      options[cmd.id] = cmd.value
+      local row = nil
+      for _, r in ipairs(buildSettings()) do
+        if r.id == cmd.id then row = r end
+      end
+      if row and row.set then row.set(options, cmd.value)
+      else options[cmd.id] = cmd.value end
+      pcall(SaveData.saveOptions, options)
+      Logger.info("native shell: setOption %s = %s -> stored %s",
+                  tostring(cmd.id), tostring(cmd.value),
+                  tostring(row and row.get and row.get(options) or options[cmd.id]))
+    end
+    lastPublished = nil
+    return
+  end
+
+  -- The debug gate, opened by ten presses on one save slot (GRShell). Kept in
+  -- the mod's own options so it survives the boot into the game, which is
+  -- where the menus it unhides actually live.
+  if cmd.action == "setDebug" then
+    local SaveData = require("src.core.SaveData")
+    local okO, options = pcall(SaveData.loadOptions)
+    if okO and type(options) == "table" then
+      options.modOptions = options.modOptions or {}
+      local m = options.modOptions.DRAMATIC_SHAPE or {}
+      m.debug = cmd.on and true or false
+      options.modOptions.DRAMATIC_SHAPE = m
       pcall(SaveData.saveOptions, options)
     end
     lastPublished = nil
+    return
+  end
+
+  -- Immersion ended (the Crown, our own button, or the system). The launcher
+  -- stands back up so the window has something to be; the game is left where
+  -- it is and simply not updated, and a later boot loads it afresh.
+  -- Deleting a save is the one command here that destroys something, so it
+  -- does nothing clever: the engine's own deleteSlot, which unregisters the
+  -- slot and removes its file. The window asks first.
+  if cmd.action == "deleteSlot" and type(cmd.version) == "string" then
+    local SaveData = require("src.core.SaveData")
+    pcall(SaveData.deleteSlot, cmd.version, cmd.id)
+    lastPublished = nil
+    return
+  end
+
+  -- An import arrives as a file the window has already written into the save
+  -- directory under a name of its choosing; this makes a slot for it and
+  -- moves it into the place that slot expects.
+  if cmd.action == "importSlot" and type(cmd.version) == "string"
+     and type(cmd.file) == "string" then
+    local SaveData = require("src.core.SaveData")
+    local okC, slotId = pcall(SaveData.createSlot, cmd.version)
+    Logger.info("native shell: import %s file=%s slot=%s",
+                tostring(cmd.version), tostring(cmd.file), tostring(slotId))
+    if okC and slotId then
+      local ok, data = pcall(love.filesystem.read, cmd.file)
+      Logger.info("native shell: import read=%s bytes=%s",
+                  tostring(ok), tostring(data and #data))
+      if ok and data then
+        -- A VANILLA .sav COMES BACK THROUGH THE CONVERTER.
+        --
+        -- That is what export hands out and what an editor gives back, so it
+        -- is the shape to expect: 32768 bytes of SRAM, decoded into a save
+        -- table and written as a slot. Anything else is taken for one of our
+        -- own slot files and written through unchanged, which is what a
+        -- straight copy between two installs is.
+        local okW = pcall(function()
+          local SaveConvert = require("src.save_convert.SaveConvert")
+          local save = SaveConvert.importSav(data, nil, cmd.version)
+          if save then
+            assert(SaveData.writeSlot(cmd.version, slotId, save))
+          else
+            local dest = SaveData.slotDiskPath(cmd.version, slotId)
+            local fh = dest and io.open(dest, "wb")
+            if not fh then error("no destination", 0) end
+            fh:write(data)
+            fh:close()
+          end
+        end)
+        Logger.info("native shell: import wrote=%s", tostring(okW))
+        if not okW then pcall(SaveData.deleteSlot, cmd.version, slotId) end
+      end
+    end
+    pcall(love.filesystem.remove, cmd.file)
+    lastPublished = nil
+    return
+  end
+
+  -- EXPORT AS A REAL BATTERY SAVE, not as our own slot file.
+  --
+  -- There is no save editor in this project, and there does not need to be:
+  -- SaveConvert already speaks the vanilla 32768-byte Gen 1 SRAM image in
+  -- both directions, and every editor ever written for Red and Blue speaks
+  -- that. Handing out slotN.lua would hand out something only this program
+  -- can read; handing out a .sav puts the player's own save in front of the
+  -- tools they already have -- and importSlot takes it back.
+  if cmd.action == "exportSlot" and type(cmd.version) == "string" then
+    local SaveData = require("src.core.SaveData")
+    local SaveConvert = require("src.save_convert.SaveConvert")
+    exportFile = nil
+    pcall(function()
+      if cmd.id then SaveData.setActiveSlot(cmd.version, cmd.id) end
+      local save = SaveData.load(cmd.version)
+      if not save then error("no save", 0) end
+      local bytes = SaveConvert.exportSav(save, cmd.version)
+      if not bytes then error("convert failed", 0) end
+      local name = ("export_%s_%s.sav"):format(cmd.version, cmd.id or "slot")
+      assert(love.filesystem.write(name, bytes))
+      exportFile = love.filesystem.getSaveDirectory() .. "/" .. name
+    end)
+    lastPublished = nil
+    return
+  end
+
+  if cmd.action == "toLauncher" then
+    -- SILENCE WHILE THE WORLD IS CLOSED.
+    --
+    -- The game is paused, not stopped, and a paused game with its music still
+    -- running is a room you have left that is still playing. Restored on the
+    -- way back in from the options file, so whatever the player set is what
+    -- returns.
+    pcall(function() require("src.core.Music").setVolumeLevel(0) end)
+    pcall(function() require("src.core.Sound").setVolumeLevel(0) end)
+    NativeShell.active = true
+    lastPublished = nil
+    publish()
     return
   end
 
@@ -296,8 +473,29 @@ local function applyCommand(cmd)
       if v == version then known = true end
     end
     if not known then version = "red" end
+    -- ALREADY LOADED? Then this is a way back IN, not a boot.
+    --
+    -- The launcher is reachable mid-game now (the Crown lands there), so
+    -- START can arrive with a game sitting in memory. Loading it a second
+    -- time re-registers everything a mod registered the first time and the
+    -- registry refuses -- "statuses already registered: BRN" -- which takes
+    -- the app down for a button that was only meant to resume. Standing the
+    -- shell down is the whole job: the update loop hands the frame back and
+    -- the game carries on where it paused, with whatever the player just
+    -- changed in the settings already applied.
+    if NativeShell.booted then
+      Logger.info("native shell: resuming, already loaded")
+      local okO, opts = pcall(require("src.core.SaveData").loadOptions)
+      if okO then
+        pcall(function() require("src.core.Music").applyOptions(opts) end)
+        pcall(function() require("src.core.Sound").applyOptions(opts) end)
+      end
+      NativeShell.active = false
+      return
+    end
     Logger.info(("native shell: booting %s"):format(version))
     NativeShell.active = false
+    NativeShell.booted = true
     if bootGame then bootGame(version) end
     return
   end
@@ -337,13 +535,40 @@ function NativeShell.begin(boot)
   Logger.info("native shell: launcher handed to the visionOS window")
 end
 
+-- Read every frame, ACTIVE OR NOT.
+--
+-- This used to return immediately once a game had booted, which made the
+-- command channel one-way: the window could still send, and nobody was
+-- listening. That is why the launcher's View picker snapped back -- the
+-- command never arrived, the optimistic UI moved, and the next snapshot put
+-- it back -- and why the Crown's way home could not work at all, since the
+-- message that stands the launcher up is itself a command.
+--
+-- Publishing still only happens while the launcher is up; what runs here for
+-- a booted game is one file existence check per poll interval.
 function NativeShell.update(dt)
-  if not NativeShell.active then return end
   timer = timer + (dt or 0)
   if timer < POLL_INTERVAL then return end
   timer = 0
 
   local cmd = takeCommand()
+  -- WITH A GAME RUNNING, only the commands that mean anything then.
+  --
+  -- Booting is the dangerous one: Game:load() a second time re-registers
+  -- everything a mod registered the first time, and the registry rightly
+  -- refuses ("statuses already registered: BRN"). Before this channel stayed
+  -- open past the launcher a stale boot command could not reach anybody; now
+  -- it can, so it is turned away here rather than left to fail loudly.
+  -- With a game running the launcher is not showing, so the rows it would
+  -- act on are not on screen either -- only the commands that mean something
+  -- from the window get through. `boot` is deliberately among them: after the
+  -- Crown it is how the player goes back in, and it resumes rather than
+  -- loading again (see below).
+  if cmd and not NativeShell.active then
+    local allowed = cmd.action == "toLauncher" or cmd.action == "setOption"
+                    or cmd.action == "setDebug" or cmd.action == "boot"
+    if not allowed then cmd = nil end
+  end
   if cmd then applyCommand(cmd) end
   -- After the command, so a toggle is reflected in the same tick it lands.
   if NativeShell.active then publish() end

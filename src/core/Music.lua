@@ -413,8 +413,22 @@ end
 
 -- 0-7 music volume (0 mutes), applied to the playing song and the
 -- queued loop body as well as everything played later
+-- The eight rungs, as gains.
+--
+-- level/7 put rung 1 at a seventh of full, which is far louder than the
+-- quietest setting on a volume ladder ought to be -- there was nowhere to go
+-- between "off" and "clearly audible". Rung 1 is now a quarter of what it
+-- was, and the rest run straight from there to full, so the ladder opens up
+-- where people actually use it. 0 is still silence.
+local function volumeGain(level)
+  level = math.max(0, math.min(7, level or 7))
+  if level <= 0 then return 0 end
+  local floorGain = (1 / 7) / 4
+  return floorGain + (level - 1) * (1 - floorGain) / 6
+end
+
 function Music.setVolumeLevel(level)
-  volumeScale = math.max(0, math.min(7, level or 7)) / 7
+  volumeScale = volumeGain(level)
   applyVolume(state.source)
   applyVolume(state.loopSource)
 end

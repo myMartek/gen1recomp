@@ -209,8 +209,52 @@ end
 
 -- Port + original Options menu defaults.  Missing keys on load are filled
 -- from this table so old options.lua files stay compatible.
+-- WHAT A HEADSET INSTALL STARTS AS.
+--
+-- The flat build's defaults are a desk's defaults, and several of them are
+-- simply wrong in a headset: the voxel mode off, no VR, a 60 Hz cap, and
+-- performance left to guess. These are the values the port was tuned to and
+-- played on, read off a working device rather than picked -- so a fresh
+-- install opens where the last session left off instead of somewhere nobody
+-- would choose.
+--
+-- Applied over the shared defaults, never over what the player has already
+-- saved: mergeOptions keeps every key the file carries.
+local function headsetDefaults(o)
+  if not love.xr then return o end
+  o.pipelines = o.pipelines or {}
+  o.pipelines.voxel = 6        -- 1ST; see lib/VoxelState ANGLE_LABELS
+  o.pipelines.tiltshift = 3
+  o.fpsCap = 90
+  o.performance = "high"
+  o.colors = "redpp"
+  o.voidFill = "trees"
+  o.uiLayout = "centered"
+  o.battleBg = "black"
+  o.battleFit = "fixed"
+  o.battleLayout = "og"
+  o.touchControls = o.touchControls or {}
+  o.touchControls.enabled = false
+  -- Half volume to start with. The flat build opens at full, which is a lot
+  -- of chiptune for something playing a hand's width from both ears, and the
+  -- rung below it is now genuinely quiet (see volumeGain) rather than a
+  -- seventh of full -- so there is somewhere to go in either direction.
+  o.musicVol = 4
+  o.sfxVol = 4
+  -- the mod is not optional on this build
+  o.mods = o.mods or {}
+  o.mods.DRAMATIC_SHAPE = true
+  o.modOptions = o.modOptions or {}
+  o.modOptions.DRAMATIC_SHAPE = {
+    aa = 4, battleBack = false, battles = true, curve = 0,
+    daytime = "sync", grid = false, smoothturn = false,
+    vr = true, water = "full",
+  }
+  return o
+end
+
 function SaveData.defaultOptions()
-  return {
+  return headsetDefaults {
     -- textSpeed 3 = MEDIUM, matching InitOptions' TEXT_DELAY_MEDIUM
     -- in wOptions (engine/menus/main_menu.asm)
     textSpeed = 3,

@@ -113,5 +113,17 @@ final class GRAppModel {
         wantsImmersiveOnLaunch = false
         markImmersiveSessionEnded()
         openWindowAction?(Self.launcherWindowID)
+        // BACK TO THE FRONT PAGE, not to the game seen flat.
+        //
+        // Leaving immersion used to reopen this window over a booted game,
+        // which shows the 1080x1920 frame as a poster on the wall -- a view
+        // nobody chose and cannot do much with. Leaving a world should land
+        // where entering it did: the picker, with the saves on it.
+        //
+        // Both halves are needed. Clearing bootedVersion is what this window
+        // draws from; the Lua side has to stand its launcher back up, or the
+        // START button would send a command nobody is listening for.
+        bootedVersion = nil
+        GRShell.shared?.returnToLauncher()
     }
 }
