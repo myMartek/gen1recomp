@@ -10,6 +10,8 @@
 #define GEN1RECOMP_BRIDGING_HEADER_H
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <simd/simd.h>
 
 /// Render into an offscreen backbuffer instead of looking for a layer to
 /// present to. Must be called before love_visionos_boot(); on visionOS there
@@ -56,6 +58,19 @@ bool love_visionos_xrClaimed(void);
 /// mod cannot present for itself, so the host loop puts this up instead of the
 /// flat virtual screen.
 void *love_visionos_simEyeTexture(void);
+
+/// The camera this frame, SIMULATOR only. The mod holds no drawable there, so
+/// it cannot ask where the head is or how wide the frustum -- the host, which
+/// does hold one, tells it. Without this the mod renders a fixed forward stare
+/// and looking around moves nothing.
+///
+/// Tangents in OpenXR's signed convention: left and down negative.
+void love_visionos_setSimView(uint32_t index, uint32_t count,
+                              simd_float4x4 originFromDevice,
+                              simd_float4x4 deviceFromView,
+                              float tanLeft, float tanRight,
+                              float tanUp, float tanDown,
+                              uint32_t width, uint32_t height);
 
 /// Atomically brackets one host fallback frame during the handover to Lua.
 bool love_visionos_beginHostFrame(void);

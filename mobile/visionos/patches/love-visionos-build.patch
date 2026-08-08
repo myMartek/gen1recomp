@@ -899,10 +899,10 @@ index 0000000..b9b1c1e
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..d04d83b
+index 0000000..ba0a4a3
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2175 @@
+@@ -0,0 +1,2464 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -935,6 +935,8 @@ index 0000000..d04d83b
 +
 +#include <cstdio>   // TEMPORARY: lifecycle logging, see the [xr] prints below
 +#include <atomic>
++#include <mutex>
++#include <cstdlib>
 +#include <unistd.h>
 +
 +#include "common/runtime.h"
@@ -998,6 +1000,21 @@ index 0000000..d04d83b
 +static love::graphics::Texture *g_eyeResolvedColors[2] = { nullptr, nullptr };
 +static love::graphics::Texture *g_eyeResolvedDepths[2] = { nullptr, nullptr };
 +static love::graphics::Texture *g_eyeRateLookups[2] = { nullptr, nullptr };
++// Whether the lookup beside it was actually WRITTEN this frame.
++//
++// The texture is allocated unconditionally and filled only where the drawable
++// offers a rasterization rate map. With foveation off there is no map, the
++// fill loop skips, and the allocation keeps whatever was in that memory --
++// storageModePrivate with loadAction DontCare, so: nothing. Handing that out
++// as a lookup is worse than handing out nothing, because every UV run through
++// it lands on the same texel. That is what made the water's mirror ONE FLAT
++// COLOUR in the headset (4 colour buckets, 99.5 per cent of them one shade,
++// against 27 buckets in the flat window) -- so the reflection search found the
++// trees correctly and then read a single pixel of nowhere.
++static bool g_eyeRateValid[2] = { false, false };
++// The inverse of the above, physical fraction -> logical fraction. Same
++// lifetime, same validity rule.
++static love::graphics::Texture *g_eyeRateInverse[2] = { nullptr, nullptr };
 +static simd_float4x4 g_originFromDevice = matrix_identity_float4x4;
 +
 +// ARKit world -> the space VRRig actually speaks.
@@ -1088,6 +1105,10 @@ index 0000000..d04d83b
 +		g_eyeResolvedColors[i] = nullptr;
 +		g_eyeResolvedDepths[i] = nullptr;
 +		g_eyeRateLookups[i] = nullptr;
++		if (g_eyeRateInverse[i] != nullptr)
++			g_eyeRateInverse[i]->release();
++		g_eyeRateInverse[i] = nullptr;
++		g_eyeRateValid[i] = false;
 +	}
 +}
 +
@@ -1102,7 +1123,7 @@ index 0000000..d04d83b
 +	id<MTLTexture> drawableColor = cp_drawable_get_color_texture(g_drawable, index);
 +	size_t mapCount = cp_drawable_get_rasterization_rate_map_count(g_drawable);
 +	id<MTLRasterizationRateMap> map = index < (int) mapCount
-+		? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, index) : nil;
++		? cp_drawable_get_rasterization_rate_map(g_drawable, index) : nil;
 +	if (drawableColor == nil)
 +		return false;
 +	// No map means no packing: the logical eye IS the texture. Bailing out
@@ -1259,25 +1280,25 @@ index 0000000..d04d83b
 +                                 constant CopyUniforms &uniforms [[buffer(2)]]) {
 +    constexpr sampler linearSampler(filter::linear,
 +                                    address::clamp_to_edge);
-+    // Through LOGICAL space, not by mirroring the physical row index.
++    // Through LOGICAL space, because the two packings need not agree.
 +    //
-+    // This used to flip physical Y directly, on the assumption that the
-+    // flipped rate map is the exact vertical mirror of the regular one. That
-+    // holds for a fixed foveation pattern and not for an eye-tracked one: the
-+    // dense region follows the gaze, so mirroring a physical row lands on a
-+    // different logical row than mirroring the logical coordinate does. The
-+    // error is zero where the two agree -- at the gaze point -- and grows with
-+    // distance from it, which is exactly "the middle is right and everything
-+    // else is bent around it".
++    // Source and destination each have their own rate map, and an eye-tracked
++    // dense region follows the gaze -- so a physical row in one is not the
++    // same logical row in the other. Decode this destination fragment to
++    // logical with the DESTINATION map and encode it back with the SOURCE
++    // map; exact for any pair, and the identity when they match.
 +    //
-+    // Decode this destination fragment to logical with the DESTINATION map,
-+    // mirror there, then encode back with the SOURCE map. Exact for any pair.
++    // NO MIRROR HERE. There was one, cancelling the mod's clip-space Y flip,
++    // and that flip is gone -- lib/Voxel3D.lua stopped premultiplying it on
++    // Metal and every compensation paired with it came out at the same time.
++    // The unfoveated branch below lost its mirror then; this one kept it, so
++    // switching foveation on stood the whole world on its head and nothing
++    // else did.
 +    float2 physical;
 +    if (kFoveated) {
 +        rasterization_rate_map_decoder destDecoder(destRate);
 +        rasterization_rate_map_decoder srcDecoder(srcRate);
 +        float2 logical = destDecoder.map_physical_to_screen_coordinates(in.position.xy);
-+        logical.y = uniforms.screenSize.y - logical.y;
 +        physical = srcDecoder.map_screen_to_physical_coordinates(logical);
 +    } else {
 +        // Same size, same packing, and -- since the mod stopped flipping
@@ -1328,6 +1349,26 @@ index 0000000..d04d83b
 +    float2 physicalSize;
 +    float2 outputSize;
 +};
++// The SAME table the other way round: indexed by a PHYSICAL fraction, giving
++// the LOGICAL one.
++//
++// Every pass that reads the frame by screen position needs one of these two.
++// The water samples the depth buffer, so it goes logical -> physical. The sky
++// is the other shape of problem: it turns each fragment's own position into a
++// view RAY, and a fragment's own position is physical -- so it needs to know
++// which logical point it is standing on before the fan means anything. Without
++// it the gradient slides sideways and tips as the gaze moves the dense region
++// around, which is precisely what a fan evaluated in the wrong space does.
++fragment half2 xr_rate_inverse_fragment(
++        CopyOut in [[stage_in]],
++        constant rasterization_rate_map_data &rateData [[buffer(0)]],
++        constant RateLookupUniforms &uniforms [[buffer(1)]]) {
++    rasterization_rate_map_decoder decoder(rateData);
++    float2 physical = in.position.xy * uniforms.physicalSize / uniforms.outputSize;
++    float2 logical = decoder.map_physical_to_screen_coordinates(physical);
++    return half2(clamp(logical / uniforms.screenSize, 0.0, 1.0));
++}
++
 +fragment half2 xr_rate_lookup_fragment(
 +        CopyOut in [[stage_in]],
 +        constant rasterization_rate_map_data &rateData [[buffer(0)]],
@@ -1367,6 +1408,32 @@ index 0000000..d04d83b
 +	}
 +	g_foveatedCopyPipelines[key] = pipeline;
 +	return pipeline;
++}
++
++static id<MTLRenderPipelineState> g_rateInversePipeline = nil;
++
++static id<MTLRenderPipelineState> rateInversePipeline(id<MTLDevice> device)
++{
++	if (g_rateInversePipeline != nil)
++		return g_rateInversePipeline;
++	if (g_foveatedCopyLibrary == nil
++		&& foveatedCopyPipeline(device, MTLPixelFormatBGRA8Unorm,
++			MTLPixelFormatInvalid, true) == nil)
++		return nil;
++	MTLRenderPipelineDescriptor *desc = [MTLRenderPipelineDescriptor new];
++	desc.vertexFunction = [g_foveatedCopyLibrary newFunctionWithName:@"xr_copy_vertex"];
++	desc.fragmentFunction = specialisedFragment(@"xr_rate_inverse_fragment", true);
++	desc.colorAttachments[0].pixelFormat = MTLPixelFormatRG16Float;
++	NSError *error = nil;
++	g_rateInversePipeline = [device newRenderPipelineStateWithDescriptor:desc
++		error:&error];
++	if (g_rateInversePipeline == nil)
++	{
++		printf("[xr] rate inverse pipeline failed: %s\n",
++			   error.localizedDescription.UTF8String);
++		fflush(stdout);
++	}
++	return g_rateInversePipeline;
 +}
 +
 +static id<MTLRenderPipelineState> rateLookupPipeline(id<MTLDevice> device)
@@ -1413,17 +1480,25 @@ index 0000000..d04d83b
 +	constexpr NSUInteger lookupHeight = 256;
 +	for (int i = 0; i < 2; i++)
 +	{
-+		if (g_eyeRateLookups[i] != nullptr)
-+			continue;
 +		MTLTextureDescriptor *desc = [MTLTextureDescriptor
 +			texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float
 +			width:lookupWidth height:lookupHeight mipmapped:NO];
 +		desc.storageMode = MTLStorageModePrivate;
 +		desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-+		id<MTLTexture> texture = [model.device newTextureWithDescriptor:desc];
-+		if (texture == nil)
-+			return false;
-+		g_eyeRateLookups[i] = gfx->newTextureFromHandle((__bridge void *) texture);
++		if (g_eyeRateLookups[i] == nullptr)
++		{
++			id<MTLTexture> texture = [model.device newTextureWithDescriptor:desc];
++			if (texture == nil)
++				return false;
++			g_eyeRateLookups[i] = gfx->newTextureFromHandle((__bridge void *) texture);
++		}
++		if (g_eyeRateInverse[i] == nullptr)
++		{
++			id<MTLTexture> texture = [model.device newTextureWithDescriptor:desc];
++			if (texture == nil)
++				return false;
++			g_eyeRateInverse[i] = gfx->newTextureFromHandle((__bridge void *) texture);
++		}
 +	}
 +
 +	id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>) gfx->getCommandQueue();
@@ -1432,9 +1507,10 @@ index 0000000..d04d83b
 +	for (int i = 0; i < 2; i++)
 +	{
 +		id<MTLRasterizationRateMap> map = i < (int) count
-+			? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, i) : nil;
++			? cp_drawable_get_rasterization_rate_map(g_drawable, i) : nil;
 +		id<MTLTexture> output = (__bridge id<MTLTexture>)
 +			(void *) g_eyeRateLookups[i]->getHandle();
++		g_eyeRateValid[i] = false;
 +		if (map == nil || output == nil)
 +			continue;
 +		MTLSizeAndAlign layout = map.parameterBufferSizeAndAlign;
@@ -1465,6 +1541,30 @@ index 0000000..d04d83b
 +		[enc setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:1];
 +		[enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 +		[enc endEncoding];
++
++		// and the same table the other way round, for passes that start from a
++		// fragment's own (physical) position rather than from a logical one
++		id<MTLTexture> inverse = (__bridge id<MTLTexture>)
++			(void *) g_eyeRateInverse[i]->getHandle();
++		id<MTLRenderPipelineState> invPipeline = rateInversePipeline(model.device);
++		if (inverse == nil || invPipeline == nil)
++			continue;
++		MTLRenderPassDescriptor *invPass = [MTLRenderPassDescriptor renderPassDescriptor];
++		invPass.colorAttachments[0].texture = inverse;
++		invPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
++		invPass.colorAttachments[0].storeAction = MTLStoreActionStore;
++		id<MTLRenderCommandEncoder> ienc =
++			[cmd renderCommandEncoderWithDescriptor:invPass];
++		[ienc setViewport:(MTLViewport){ 0, 0, (double) inverse.width,
++			(double) inverse.height, 0, 1 }];
++		[ienc setRenderPipelineState:invPipeline];
++		[ienc setFragmentBuffer:data offset:0 atIndex:0];
++		uniforms.outputSize = { (float) inverse.width, (float) inverse.height };
++		[ienc setFragmentBytes:&uniforms length:sizeof(uniforms) atIndex:1];
++		[ienc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
++		[ienc endEncoding];
++
++		g_eyeRateValid[i] = true;
 +	}
 +	[cmd commit];
 +	return true;
@@ -1573,6 +1673,8 @@ index 0000000..d04d83b
 +}
 +
 +#if TARGET_OS_SIMULATOR
++// Only a starting size, and only until the host has shown a drawable; the real
++// one comes from simEyeTexture below.
 +#define SIM_EYE_W 1280
 +#define SIM_EYE_H 720
 +// What the mod last rendered, for the host to present. Written by LOVE's
@@ -1583,6 +1685,127 @@ index 0000000..d04d83b
 +extern "C" void *love_visionos_simEyeTexture(void)
 +{
 +	return g_simEye.load(std::memory_order_acquire);
++}
++
++// The camera the HOST's frame loop last held, handed back so the mod can draw
++// from it.
++//
++// The mod does not own the frame loop in the simulator (see w_claim), so it
++// never touches a cp_drawable and has nothing real of its own to report. The
++// first version of this therefore invented a view: origin, identity rotation,
++// a symmetric 69-degree frustum. It rendered, and it rendered the same picture
++// no matter where the simulated head looked -- a painting, not a viewpoint.
++//
++// The host, meanwhile, has all of it every frame. So it publishes it here and
++// w_views hands it to the mod, which then runs exactly the arithmetic it runs
++// on the device: rigFromOrigin . originFromDevice . deviceFromView, with the
++// frustum out of the drawable's own projection.
++//
++// A mutex rather than an atomic because this is 140 bytes that have to agree
++// with each other; a pose from one frame with a frustum from another is a
++// picture that is subtly wrong in a way nobody would think to look for. It is
++// taken twice per frame and never held across anything.
++struct SimView
++{
++	simd_float4x4 originFromDevice;
++	simd_float4x4 deviceFromView;
++	float tanLeft, tanRight, tanUp, tanDown;
++	uint32_t width, height;
++	bool valid;
++};
++
++static SimView g_simView[2] = {
++	{ matrix_identity_float4x4, matrix_identity_float4x4,
++	  -0.6f, 0.6f, 0.55f, -0.55f, SIM_EYE_W, SIM_EYE_H, false },
++	{ matrix_identity_float4x4, matrix_identity_float4x4,
++	  -0.6f, 0.6f, 0.55f, -0.55f, SIM_EYE_W, SIM_EYE_H, false },
++};
++// One or two. The simulator's layer is mono, so a second eye here is always
++// synthetic -- the host offsets the one view it has by half an IPD. That is
++// not a simulation of the headset's optics and is not meant to be; it is a
++// bench rig for the one remaining question the mono path cannot ask, which is
++// whether anything in the renderer behaves differently when a SECOND eye is
++// drawn beside the first.
++static int g_simViewCount = 1;
++static std::mutex g_simViewLock;
++
++extern "C" void love_visionos_setSimView(uint32_t index, uint32_t count,
++                                         simd_float4x4 originFromDevice,
++                                         simd_float4x4 deviceFromView,
++                                         float tanLeft, float tanRight,
++                                         float tanUp, float tanDown,
++                                         uint32_t width, uint32_t height)
++{
++	if (index > 1 || count < 1 || count > 2)
++		return;
++	std::lock_guard<std::mutex> guard(g_simViewLock);
++	SimView &v = g_simView[index];
++	v.originFromDevice = originFromDevice;
++	v.deviceFromView = deviceFromView;
++	v.tanLeft = tanLeft;
++	v.tanRight = tanRight;
++	v.tanUp = tanUp;
++	v.tanDown = tanDown;
++	v.width = width;
++	v.height = height;
++	v.valid = true;
++	g_simViewCount = (int) count;
++}
++
++static SimView simView(int index = 0)
++{
++	std::lock_guard<std::mutex> guard(g_simViewLock);
++	return g_simView[(index < 0 || index > 1) ? 0 : index];
++}
++
++static int simViewCount()
++{
++	std::lock_guard<std::mutex> guard(g_simViewLock);
++	return g_simViewCount;
++}
++
++static love::graphics::Texture *g_simEyeTex[2] = { nullptr, nullptr };
++
++// The one texture the mod draws into here, and the one the host presents.
++//
++// Sized off the drawable rather than fixed, because the host puts this up
++// filling the whole view: any aspect ratio but the drawable's own comes out
++// stretched, and a 16:9 texture in a squarer frustum stretches enough to read
++// as "the geometry is wrong" rather than "the blit is". Halved in each
++// dimension -- the simulator runs the voxel pass on the Mac's GPU through a
++// translation layer, and quarter the pixels is the difference between watching
++// the world and watching a slideshow of it.
++static love::graphics::Texture *simEyeTexture(int index = 0)
++{
++	if (index < 0 || index > 1)
++		return nullptr;
++	SimView sv = simView(index);
++	int w = (int) sv.width / 2, h = (int) sv.height / 2;
++	if (w < 16 || h < 16) { w = SIM_EYE_W; h = SIM_EYE_H; }
++
++	if (g_simEyeTex[index] != nullptr)
++	{
++		if (g_simEyeTex[index]->getPixelWidth() == w
++			&& g_simEyeTex[index]->getPixelHeight() == h)
++			return g_simEyeTex[index];
++		// The drawable changed shape under us. Stop advertising the old texture
++		// BEFORE dropping it: the host reads that pointer from its own thread.
++		if (index == 0)
++			g_simEye.store(nullptr, std::memory_order_release);
++		g_simEyeTex[index]->release();
++		g_simEyeTex[index] = nullptr;
++	}
++
++	auto gfx = getMetalGraphics();
++	if (gfx == nullptr)
++		return nullptr;
++	love::graphics::Texture::Settings st;
++	st.width = w;
++	st.height = h;
++	st.renderTarget = true;
++	st.debugName = index == 0 ? "xr simulator eye 0" : "xr simulator eye 1";
++	g_simEyeTex[index] = gfx->newTexture(st);
++	return g_simEyeTex[index];
 +}
 +#endif
 +
@@ -2051,7 +2274,18 @@ index 0000000..d04d83b
 +{
 +#if TARGET_OS_SIMULATOR
 +	// No CompositorServices call at all. The host is pacing the compositor;
-+	// this only tells the mod "draw one".
++	// this only tells the mod "draw one" -- and adopts the head pose the host
++	// saw, so that the frame the mod is about to draw is aimed where the
++	// simulated player is looking. Same two lines as the device path below,
++	// against a device anchor somebody else queried.
++	{
++		SimView sv = simView();
++		if (sv.valid)
++		{
++			g_originFromDevice = sv.originFromDevice;
++			updateRigFromOrigin(g_originFromDevice);
++		}
++	}
 +	lua_pushnumber(L, CACurrentMediaTime());
 +	return 1;
 +#endif
@@ -2185,34 +2419,60 @@ index 0000000..d04d83b
 +static int w_views(lua_State *L)
 +{
 +#if TARGET_OS_SIMULATOR
-+	// One view, standing still, looking forward, with a plain symmetric
-+	// frustum. The simulator tracks no head and hands out no drawable, so
-+	// there is nothing real to report -- and the mod only needs a camera to
-+	// render from. Mono, deliberately: two eyes of a scene nobody can look
-+	// around in buys nothing and costs twice the frame.
-+	lua_createtable(L, 1, 0);
-+	lua_createtable(L, 0, 4);
-+	lua_createtable(L, 0, 2);
-+	lua_createtable(L, 3, 0);
-+	for (int k = 1; k <= 3; k++) { lua_pushnumber(L, 0.0); lua_rawseti(L, -2, k); }
-+	lua_setfield(L, -2, "pos");
-+	lua_createtable(L, 4, 0);
-+	lua_pushnumber(L, 0.0); lua_rawseti(L, -2, 1);
-+	lua_pushnumber(L, 0.0); lua_rawseti(L, -2, 2);
-+	lua_pushnumber(L, 0.0); lua_rawseti(L, -2, 3);
-+	lua_pushnumber(L, 1.0); lua_rawseti(L, -2, 4);
-+	lua_setfield(L, -2, "quat");
-+	lua_setfield(L, -2, "pose");
-+	lua_createtable(L, 0, 4);
-+	lua_pushnumber(L, -0.6);  lua_setfield(L, -2, "angleLeft");
-+	lua_pushnumber(L,  0.6);  lua_setfield(L, -2, "angleRight");
-+	lua_pushnumber(L,  0.55); lua_setfield(L, -2, "angleUp");
-+	lua_pushnumber(L, -0.55); lua_setfield(L, -2, "angleDown");
-+	lua_setfield(L, -2, "fov");
-+	lua_pushinteger(L, SIM_EYE_W); lua_setfield(L, -2, "w");
-+	lua_pushinteger(L, SIM_EYE_H); lua_setfield(L, -2, "h");
-+	lua_rawseti(L, -2, 1);
-+	return 1;
++	// ONE view -- the simulator's layer really is mono, one view and one colour
++	// texture -- but a real one, out of the host's last drawable. Everything
++	// below is the same arithmetic as the device path; only the source of the
++	// two matrices differs.
++	{
++		int count = simViewCount();
++		lua_createtable(L, count, 0);
++
++		for (int i = 0; i < count; i++)
++		{
++			SimView sv = simView(i);
++			simd_float4x4 worldFromView = simd_mul(g_rigFromOrigin,
++				simd_mul(sv.originFromDevice, sv.deviceFromView));
++			simd_float4 pos = worldFromView.columns[3];
++			simd_quatf q = simd_quaternion(worldFromView);
++
++			// The size the mod renders at, which is the eye texture's -- not
++			// the drawable's. They differ by simEyeTexture's downscale, and
++			// this number feeds the world-pixel density in lib/VR.lua, so
++			// reporting the drawable's would put the sky's dither grid at the
++			// wrong size.
++			auto eye = simEyeTexture(i);
++			int w = eye != nullptr ? eye->getPixelWidth() : SIM_EYE_W;
++			int h = eye != nullptr ? eye->getPixelHeight() : SIM_EYE_H;
++
++			lua_createtable(L, 0, 4);
++
++			lua_createtable(L, 0, 2);
++			lua_createtable(L, 3, 0);
++			lua_pushnumber(L, pos.x); lua_rawseti(L, -2, 1);
++			lua_pushnumber(L, pos.y); lua_rawseti(L, -2, 2);
++			lua_pushnumber(L, pos.z); lua_rawseti(L, -2, 3);
++			lua_setfield(L, -2, "pos");
++			lua_createtable(L, 4, 0);
++			lua_pushnumber(L, q.vector.x); lua_rawseti(L, -2, 1);
++			lua_pushnumber(L, q.vector.y); lua_rawseti(L, -2, 2);
++			lua_pushnumber(L, q.vector.z); lua_rawseti(L, -2, 3);
++			lua_pushnumber(L, q.vector.w); lua_rawseti(L, -2, 4);
++			lua_setfield(L, -2, "quat");
++			lua_setfield(L, -2, "pose");
++
++			lua_createtable(L, 0, 4);
++			lua_pushnumber(L, atanf(sv.tanLeft));  lua_setfield(L, -2, "angleLeft");
++			lua_pushnumber(L, atanf(sv.tanRight)); lua_setfield(L, -2, "angleRight");
++			lua_pushnumber(L, atanf(sv.tanUp));    lua_setfield(L, -2, "angleUp");
++			lua_pushnumber(L, atanf(sv.tanDown));  lua_setfield(L, -2, "angleDown");
++			lua_setfield(L, -2, "fov");
++
++			lua_pushinteger(L, w); lua_setfield(L, -2, "w");
++			lua_pushinteger(L, h); lua_setfield(L, -2, "h");
++			lua_rawseti(L, -2, i + 1);
++		}
++		return 1;
++	}
 +#endif
 +
 +	if (g_drawable == nullptr)
@@ -2280,6 +2540,22 @@ index 0000000..d04d83b
 +		lua_pushinteger(L, (lua_Integer) screen.width);  lua_setfield(L, -2, "w");
 +		lua_pushinteger(L, (lua_Integer) screen.height); lua_setfield(L, -2, "h");
 +
++		// Once per eye. The simulator's own view is symmetric and 16:9; the
++		// headset's is neither, and "neither" is currently the only remaining
++		// candidate for the reflection bug. Printing it is what lets the
++		// simulator be set to the same numbers and reproduce it off the head.
++		{
++			static bool said[2] = { false, false };
++			if (i < 2 && !said[i])
++			{
++				said[i] = true;
++				printf("[xr] eye %d frustum: L%.4f R%.4f U%.4f D%.4f  %lux%lu\n",
++				       (int) i, tanLeft, tanRight, tanUp, tanDown,
++				       (unsigned long) screen.width, (unsigned long) screen.height);
++				fflush(stdout);
++			}
++		}
++
 +		lua_rawseti(L, -2, (int) i + 1);
 +	}
 +
@@ -2287,32 +2563,11 @@ index 0000000..d04d83b
 +}
 +
 +/** The drawable texture as a model for the linear eye scratch allocation. */
-+#if TARGET_OS_SIMULATOR
-+static love::graphics::Texture *g_simEyeTex = nullptr;
-+
-+// The one texture the mod draws into here, and the one the host presents.
-+static love::graphics::Texture *simEyeTexture()
-+{
-+	if (g_simEyeTex != nullptr)
-+		return g_simEyeTex;
-+	auto gfx = getMetalGraphics();
-+	if (gfx == nullptr)
-+		return nullptr;
-+	love::graphics::Texture::Settings st;
-+	st.width = SIM_EYE_W;
-+	st.height = SIM_EYE_H;
-+	st.renderTarget = true;
-+	st.debugName = "xr simulator eye";
-+	g_simEyeTex = gfx->newTexture(st);
-+	return g_simEyeTex;
-+}
-+#endif
-+
 +static int w_eyeCanvas(lua_State *L)
 +{
 +#if TARGET_OS_SIMULATOR
 +	{
-+		auto tex = simEyeTexture();
++		auto tex = simEyeTexture((int) luaL_checkinteger(L, 1) - 1);
 +		if (tex == nullptr)
 +			return 0;
 +		luax_pushtype(L, tex);
@@ -2338,9 +2593,30 @@ index 0000000..d04d83b
 +static int w_rateMap(lua_State *L)
 +{
 +	int index = (int) luaL_checkinteger(L, 1) - 1;
-+	if (index < 0 || index >= 2 || g_eyeRateLookups[index] == nullptr)
++	if (index < 0 || index >= 2 || g_eyeRateLookups[index] == nullptr
++		|| !g_eyeRateValid[index])
 +		return 0;
 +	luax_pushtype(L, g_eyeRateLookups[index]);
++	return 1;
++}
++
++/**
++ * The same packing read backwards: a PHYSICAL fraction in, the LOGICAL one out.
++ *
++ * rateMap serves passes that hold a logical position and want to sample the
++ * frame; this serves passes that hold a fragment's own position and want to
++ * know what it means. The sky's ray fan is the latter -- it turns a position
++ * into a direction -- and without it the fan runs over the packed image
++ * instead of the picture, so the gradient slides sideways and tips as the gaze
++ * moves the dense region about.
++ */
++static int w_rateMapInverse(lua_State *L)
++{
++	int index = (int) luaL_checkinteger(L, 1) - 1;
++	if (index < 0 || index >= 2 || g_eyeRateInverse[index] == nullptr
++		|| !g_eyeRateValid[index])
++		return 0;
++	luax_pushtype(L, g_eyeRateInverse[index]);
 +	return 1;
 +}
 +
@@ -2424,7 +2700,7 @@ index 0000000..d04d83b
 +		(void *) g_eyeResolvedDepths[index]->getHandle();
 +	id<MTLRasterizationRateMap> map =
 +		index < (int) cp_drawable_get_rasterization_rate_map_count(g_drawable)
-+			? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, index) : nil;
++			? cp_drawable_get_rasterization_rate_map(g_drawable, index) : nil;
 +	id<MTLRenderPipelineState> pipeline =
 +		foveatedResolvePipeline(sourceColor.device, sourceColor.pixelFormat,
 +								map != nil);
@@ -2484,8 +2760,20 @@ index 0000000..d04d83b
 +{
 +#if TARGET_OS_SIMULATOR
 +	{
-+		auto tex = simEyeTexture();
-+		if (tex != nullptr)
++		int index = (int) luaL_checkinteger(L, 1) - 1;
++		auto tex = simEyeTexture(index);
++		static bool said = false;
++		if (!said)
++		{
++			said = true;
++			printf("[xr] simulator: first submitEye, eye %d, texture %p\n",
++				   index, tex ? (void *) tex->getHandle() : nullptr);
++			fflush(stdout);
++		}
++		// Only eye 0 is ever put up: there is one drawable and one screenshot
++		// to look at. The right eye is still DRAWN, which is the whole point --
++		// what is being tested is whether drawing it changes the left.
++		if (tex != nullptr && index == 0)
 +			g_simEye.store((void *) tex->getHandle(), std::memory_order_release);
 +		luax_pushboolean(L, true);
 +		return 1;
@@ -2597,7 +2885,7 @@ index 0000000..d04d83b
 +			id<MTLRasterizationRateMap> destMap = i < (int) rateCount
 +				? cp_drawable_get_rasterization_rate_map(g_drawable, i) : nil;
 +			id<MTLRasterizationRateMap> srcMap = i < (int) rateCount
-+				? cp_drawable_get_flipped_rasterization_rate_map(g_drawable, i) : nil;
++				? cp_drawable_get_rasterization_rate_map(g_drawable, i) : nil;
 +			id<MTLBuffer> destData = nil, srcData = nil;
 +			if (destMap != nil && srcMap != nil)
 +			{
@@ -3059,6 +3347,7 @@ index 0000000..d04d83b
 +	{ "screenTexture", w_screenTexture },
 +	{ "eyeDepth",    w_eyeDepth    },
 +	{ "rateMap",     w_rateMap     },
++	{ "rateMapInverse", w_rateMapInverse },
 +	{ "hands",       w_hands       },
 +	{ "eyePhysicalSize", w_eyePhysicalSize },
 +	{ "resolveEye",  w_resolveEye  },
