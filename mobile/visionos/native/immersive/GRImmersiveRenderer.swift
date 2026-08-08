@@ -182,7 +182,19 @@ final class GRImmersiveRenderer {
         frame.startUpdate()
         frame.endUpdate()
 
-        guard let timing = frame.predictTiming() else { return }
+        // EVERY exit from here on closes the frame.
+        //
+        // A frame that is queried and then abandoned keeps whatever the
+        // compositor lent it. The next client to ask for a drawable waits for
+        // it -- and waits, because nobody is going to give it back. That is
+        // exactly where the mod's render thread was found parked in the
+        // simulator: inside cp_frame_query_drawable, for ever, until wakeboard
+        // killed the app for sending no frames.
+        guard let timing = frame.predictTiming() else {
+            frame.startSubmission()
+            frame.endSubmission()
+            return
+        }
         // Sleeping until the optimal input time is what keeps the head pose
         // fresh: everything sampled after this is closer to the moment the
         // frame is actually shown.
@@ -193,7 +205,11 @@ final class GRImmersiveRenderer {
         // must be queried before submission starts.
         let drawables = frame.queryDrawables()
         guard let drawable = drawables.first(where: { $0.target == .builtIn })
-                ?? drawables.first else { return }
+                ?? drawables.first else {
+            frame.startSubmission()
+            frame.endSubmission()
+            return
+        }
 
         frame.startSubmission()
 
@@ -218,9 +234,12 @@ final class GRImmersiveRenderer {
         // and textures cannot be shared across MTLDevices in any case -- the
         // panel has been sampling this one all along.
         //
-        // Same rule as above: nothing to present, so nothing to end.
+        // Submission has already begun here, so this one must end it.
         guard let commandBuffer = (GRLove.commandQueue ?? queue).makeCommandBuffer()
-        else { return }
+        else {
+            frame.endSubmission()
+            return
+        }
 
         let screen = GRLove.virtualScreen
         let originFromDevice = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
