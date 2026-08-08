@@ -9,6 +9,7 @@
 #   --rom FILE     push a .gb/.gbc into Documents/ for the importer to pick up
 #   --file FILE    push any file into Documents/ (mod .zip, .sav, ...)
 #   --launch       relaunch the app afterwards with its stdout on this terminal
+#   --simulator    push into the booted visionOS simulator instead of the headset
 #
 # Why this exists: iterating on 41k lines of Lua through a full xcodebuild
 # cycle is intolerable, and the mod is deliberately NOT fused into game.love
@@ -60,17 +61,54 @@ fi
 IDENTITY="${POKEPORT_IDENTITY:-pokemon-love2d}"
 SAVE_ROOT="Library/Application Support/$IDENTITY"
 
-MOD_DIR=""; ROM=""; EXTRA=""; LAUNCH=false
+MOD_DIR=""; ROM=""; EXTRA=""; LAUNCH=false; SIMULATOR=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --rom)    shift; ROM="${1:-}" ;;
     --file)   shift; EXTRA="${1:-}" ;;
     --launch) LAUNCH=true ;;
+    --simulator) SIMULATOR=true ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *)        MOD_DIR="$1" ;;
   esac
   shift
 done
+
+# --------------------------------------------------------------- simulator
+#
+# The simulator keeps its own container, and nothing was ever putting anything
+# into it: this script speaks devicectl, which only knows the headset. The
+# simulator's copy of the mod sat four days stale without saying so -- old
+# enough to predate the VR backend entirely, so the VR row simply was not
+# there and the effect under test could not be reached. A stale copy that
+# looks like a missing feature is worse than no copy at all.
+if [ "$SIMULATOR" = true ]; then
+  SIM="${GEN1_VISIONOS_SIM:-$(xcrun simctl list devices booted 2>/dev/null \
+      | grep -o '[0-9A-F-]\{36\}' | head -1)}"
+  [ -n "$SIM" ] || fail "no booted visionOS simulator (set GEN1_VISIONOS_SIM)"
+  SIM_ROOT="$(xcrun simctl get_app_container "$SIM" "$BUNDLE_ID" data 2>/dev/null)"
+  [ -n "$SIM_ROOT" ] || fail "$BUNDLE_ID is not installed on simulator $SIM"
+  DEST="$SIM_ROOT/$SAVE_ROOT"
+  mkdir -p "$DEST/mods"
+  if [ -n "$MOD_DIR" ]; then
+    [ -f "$MOD_DIR/manifest.json" ] || fail "$MOD_DIR has no manifest.json"
+    MOD_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$MOD_DIR/manifest.json")"
+    rm -rf "$DEST/mods/$MOD_ID"
+    # Same exclusion the device path makes: the checkout's .git is hundreds of
+    # files the game will never read.
+    rsync -a --exclude '.git' "$MOD_DIR/" "$DEST/mods/$MOD_ID/"
+    say "$MOD_ID -> $DEST/mods/$MOD_ID"
+  fi
+  [ -n "$ROM" ] && { cp "$ROM" "$DEST/"; say "$(basename "$ROM") -> $DEST"; }
+  [ -n "$EXTRA" ] && { cp "$EXTRA" "$DEST/"; say "$(basename "$EXTRA") -> $DEST"; }
+  if [ "$LAUNCH" = true ]; then
+    xcrun simctl terminate "$SIM" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    xcrun simctl launch "$SIM" "$BUNDLE_ID" >/dev/null
+    say "relaunched on the simulator"
+  fi
+  say "done"
+  exit 0
+fi
 
 DEVICE="${GEN1_VISIONOS_DEVICE:-}"
 if [ -z "$DEVICE" ]; then
