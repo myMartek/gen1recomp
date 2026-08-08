@@ -44,6 +44,16 @@ final class GRImmersiveRenderer {
         var halfSize: SIMD2<Float>
     }
 
+    #if targetEnvironment(simulator)
+    private var eyePipeline: MTLRenderPipelineState?
+    private var eyePipelineFormat: MTLPixelFormat = .invalid
+    private var eyeDepthFormat: MTLPixelFormat = .invalid
+
+    private struct FlatUniforms {
+        var uvScale: SIMD2<Float>
+    }
+    #endif
+
     /// Where the panel hangs, captured from the head on the first tracked
     /// frame rather than fixed in world space.
     ///
@@ -170,6 +180,60 @@ final class GRImmersiveRenderer {
         return panelPipeline
     }
 
+    #if targetEnvironment(simulator)
+    /// The same fullscreen blit the flat window uses, aimed at an eye texture.
+    ///
+    /// Deliberately not the panel pipeline: what the mod hands over here is a
+    /// picture already drawn through this eye's own frustum, so it belongs
+    /// across the whole view and nowhere else. Putting it on the world-locked
+    /// quad instead -- which is what this did first -- shows a correct VR frame
+    /// as a poster on a wall: it fills a fraction of the field, and turning the
+    /// head slides the poster instead of moving through the scene.
+    private func eyeBlitPipeline(for format: MTLPixelFormat,
+                                 depth: MTLPixelFormat) -> MTLRenderPipelineState? {
+        if let p = eyePipeline, eyePipelineFormat == format, eyeDepthFormat == depth { return p }
+        guard let library = device.makeDefaultLibrary(),
+              let vfn = library.makeFunction(name: "gr_flat_vertex"),
+              let ffn = library.makeFunction(name: "gr_flat_fragment")
+        else { return nil }
+
+        let desc = MTLRenderPipelineDescriptor()
+        desc.vertexFunction = vfn
+        desc.fragmentFunction = ffn
+        desc.colorAttachments[0].pixelFormat = format
+        desc.depthAttachmentPixelFormat = depth
+        eyePipeline = try? device.makeRenderPipelineState(descriptor: desc)
+        eyePipelineFormat = format
+        eyeDepthFormat = depth
+        return eyePipeline
+    }
+
+    /// Hands the mod the camera it cannot ask for itself.
+    ///
+    /// The mod does not own the frame loop in the simulator, so it holds no
+    /// drawable and knows neither where the head is nor how wide the frustum.
+    /// This loop holds both. Published every frame, consumed by love.xr.views
+    /// -- which then runs exactly the arithmetic it runs on the device.
+    private func publishSimView(drawable: LayerRenderer.Drawable,
+                                originFromDevice: simd_float4x4) {
+        guard let view = drawable.views.first,
+              let colour = drawable.colorTextures.first else { return }
+        let proj = drawable.computeProjection(viewIndex: 0)
+        // For an off-centre frustum P[0][0] = 2n/(r-l) and P[2][0] = (r+l)/(r-l),
+        // which rearranges to these. Same four lines as wrap_XR's device path,
+        // and they have to stay the same four lines.
+        let tanRight = ( 1 + proj.columns.2.x) / proj.columns.0.x
+        let tanLeft  = (-1 + proj.columns.2.x) / proj.columns.0.x
+        let tanUp    = ( 1 + proj.columns.2.y) / proj.columns.1.y
+        let tanDown  = (-1 + proj.columns.2.y) / proj.columns.1.y
+
+
+        love_visionos_setSimView(0, 1, originFromDevice, view.transform,
+                                 tanLeft, tanRight, tanUp, tanDown,
+                                 UInt32(colour.width), UInt32(colour.height))
+    }
+    #endif
+
     private func renderFrame() {
         // Atomic handover with love.xr. A plain poll in run() is not enough:
         // Lua can claim the layer while this function sleeps until optimal
@@ -241,18 +305,23 @@ final class GRImmersiveRenderer {
             return
         }
 
+        let screen = GRLove.virtualScreen
+
         // In the SIMULATOR, show what the mod rendered rather than the flat
         // virtual screen. It cannot present for itself there -- see
         // love_visionos_simEyeTexture -- so it draws its VR frame into a
         // texture and this loop, which does still get drawables, puts it up.
-        var screen = GRLove.virtualScreen
         #if targetEnvironment(simulator)
+        var modEye: MTLTexture? = nil
         if let raw = love_visionos_simEyeTexture() {
-            screen = Unmanaged<AnyObject>.fromOpaque(raw)
-                .takeUnretainedValue() as? MTLTexture ?? screen
+            modEye = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue() as? MTLTexture
         }
         #endif
         let originFromDevice = deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4
+
+        #if targetEnvironment(simulator)
+        publishSimView(drawable: drawable, originFromDevice: originFromDevice)
+        #endif
 
         // One view per EYE, not one per texture.
         //
@@ -315,6 +384,30 @@ final class GRImmersiveRenderer {
                                                 height: Double(size.height),
                                                 znear: 0, zfar: 1))
             }
+
+            // The mod's own frame, across the whole view: it was drawn through
+            // this eye's frustum, so there is nothing left to place it in.
+            //
+            // No depth state, and so no depth written: the compositor does not
+            // reproject in the simulator (see the depth attachment note above),
+            // and there is no meaningful per-pixel depth to give it for a
+            // picture that arrives already flattened.
+            #if targetEnvironment(simulator)
+            if let eye = modEye {
+                if let blit = eyeBlitPipeline(for: target.pixelFormat,
+                                              depth: depthTexture?.pixelFormat ?? .invalid) {
+                    var flat = FlatUniforms(uvScale: SIMD2<Float>(1, 1))
+                    encoder.setRenderPipelineState(blit)
+                    encoder.setFragmentTexture(eye, index: 0)
+                    encoder.setFragmentBytes(&flat,
+                                             length: MemoryLayout<FlatUniforms>.stride,
+                                             index: 0)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                }
+                encoder.endEncoding()
+                continue
+            }
+            #endif
 
             // Drawn again: with the launcher dismissed during immersion this
             // is the only thing in the space. It is softer than the native
