@@ -300,6 +300,10 @@ function love.update(dt)
   -- through all N, the player slides past the waypoint, and the script
   -- re-plans from an overshot cell.  So iterate the whole act+step loop
   -- instead -- same script, just more of it per rendered frame.
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   local iterations = scriptedIterations()
 
   if autopilot then
@@ -338,6 +342,10 @@ function love.draw()
   -- runs again either, and the launcher looks alive while answering nothing.
   if NativeShell.active then return NativeShell.draw() end
 
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:draw()
   -- frame capture requested by a driver
   if Game.capturePath then
@@ -358,12 +366,20 @@ function love.keypressed(key, scancode, isrepeat)
   if editorMode then return EditorApp.keypressed(key) end
   if TouchEditor then return TouchEditor.keypressed(key) end
   if Importer then return Importer:keypressed(key) end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:keypressed(key)
 end
 
 function love.keyreleased(key)
   if editorMode or TouchEditor then return end
   if Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:keyreleased(key)
 end
 
@@ -464,6 +480,10 @@ function love.focus(f)
     if Importer.focus then Importer:focus(f) end
     return
   end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:focus(f)
 end
 
@@ -471,6 +491,10 @@ end
 function love.visible(v)
   if editorMode or TouchEditor then return end
   if Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:visible(v)
 end
 
@@ -494,6 +518,10 @@ function love.touchpressed(id, x, y, dx, dy, pressure)
     if love.system.getOS() == "iOS" then return end
     return Importer:mousepressed(x, y, 1)
   end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:touchpressed(id, x, y)
 end
 
@@ -504,6 +532,10 @@ function love.touchmoved(id, x, y, dx, dy, pressure)
     return TouchEditor.touchmoved(id, x, y)
   end
   if Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:touchmoved(id, x, y)
 end
 
@@ -514,6 +546,10 @@ function love.touchreleased(id, x, y, dx, dy, pressure)
     return TouchEditor.touchreleased(id, x, y)
   end
   if Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:touchreleased(id, x, y)
 end
 
@@ -524,6 +560,10 @@ function love.wheelmoved(x, y)
   end
   if TouchEditor then return end
   if Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   Game:wheelmoved(x, y)
 end
 
@@ -555,6 +595,10 @@ function love.mousepressed(x, y, button, istouch)
   if editorMode and EditorApp.mousepressed then
     return EditorApp.mousepressed(x, y, button)
   end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   if mouseTouch and Game and button == 1 then
     Game:touchpressed("mouse", x, y)
   end
@@ -569,6 +613,10 @@ function love.mousereleased(x, y, button)
   if editorMode and EditorApp.mousereleased then
     return EditorApp.mousereleased(x, y, button)
   end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   if mouseTouch and Game and button == 1 then
     Game:touchreleased("mouse", x, y)
   end
@@ -580,6 +628,10 @@ function love.mousemoved(x, y)
     return TouchEditor.mousemoved(x, y)
   end
   if editorMode or Importer then return end
+  -- Game is nil until a ROM has been booted. On visionOS that window is
+  -- real: the launcher is the app's front end, and the system delivers
+  -- focus, visibility and input into it before any game exists.
+  if not Game then return end
   if mouseTouch and Game and love.mouse.isDown(1) then
     Game:touchmoved("mouse", x, y)
   end
