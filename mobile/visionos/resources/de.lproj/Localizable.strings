@@ -28,8 +28,10 @@
 "starting…" = "startet…";
 
 "View" = "Ansicht";
-"First Person" = "Egoperspektive";
-"Third Person" = "Verfolgerperspektive";
+/* Nicht übersetzt, mit Absicht: "Egoperspektive" und "Verfolgerperspektive"
+   sagt hier niemand, und die englischen Kurzformen sind das, was gemeint ist. */
+"First Person" = "1st Person";
+"Third Person" = "3rd Person";
 
 /* --- Editor: Rahmen --- */
 "Save Editor" = "Spielstand-Editor";
