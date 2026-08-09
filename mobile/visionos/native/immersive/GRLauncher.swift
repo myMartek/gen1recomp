@@ -162,7 +162,7 @@ struct GRLauncherView: View {
     private var picker: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                Text("Pocket Sim")
+                Text("Gen1 Vision")
                     .font(.largeTitle.weight(.semibold))
 
                 if !shell.hasState {

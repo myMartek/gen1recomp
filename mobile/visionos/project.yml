@@ -377,7 +377,7 @@ targets:
           - $(inherited)
           - "@executable_path/Frameworks"
         PRODUCT_NAME: gen1recomp-immersive
-        PRODUCT_BUNDLE_IDENTIFIER: de.martek.pocketsim
+        PRODUCT_BUNDLE_IDENTIFIER: de.martek.gen1vision
         MARKETING_VERSION: "0.0.0"
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

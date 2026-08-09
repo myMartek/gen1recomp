@@ -2,7 +2,7 @@
    same keys and anything missing there falls back to this file. */
 
 /* --- launcher --- */
-"Pocket Sim" = "Pocket Sim";
+"Gen1 Vision" = "Gen1 Vision";
 "Game" = "Game";
 "Save" = "Save";
 "Settings" = "Settings";
