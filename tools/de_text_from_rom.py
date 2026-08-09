@@ -40,11 +40,20 @@ TX_FAR = 0x17
 
 # Control codes as the engine's own extraction writes them, so a translated
 # line carries the same markers the English one does.
+# The engine writes three control characters and no others -- checked against
+# data/generated/text.lua, where 2585 English texts use 10, 11 and 12 and
+# nothing else. The \p and \c I invented here were literal backslash-p and
+# backslash-c: the box drew them and, worse, never waited, because what makes
+# it wait is chr(11) and chr(12) rather than a marker that looks like one.
 CTRL = {0x50: None,   # end
         0x57: None,   # end, close box
         0x58: None,   # end, prompt
         0x00: "",     # TX_START, the byte every far text opens with
-        0x4E: "\n", 0x4F: "\n", 0x51: "\\p", 0x55: "\\c", 0x49: "\\l",
+        0x4E: "\n",   # next line
+        0x4F: "\n",   # bottom line -- the English extraction writes 10 for it too
+        0x51: "\x0c", # paragraph: clear the box and wait
+        0x55: "\x0b", # cont: wait, then scroll
+        0x49: "\n",
         0x5F: "", 0x7F: " "}
 CHARMAP = {0xE0: "'", 0xE1: "PK", 0xE2: "MN", 0xE3: "-", 0xE6: "?", 0xE7: "!",
            0xE8: ".", 0xEF: "♂", 0xF5: "♀", 0xF2: ".", 0xF3: "/",
@@ -86,8 +95,9 @@ def decode(rom, at, limit=2048):
 
 
 def lua_quote(s):
-    return '"%s"' % (s.replace("\\", "\\\\").replace('"', '\\"')
-                      .replace("\n", "\\n"))
+    out = (s.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\x0b", "\\11").replace("\x0c", "\\12"))
+    return '"%s"' % out
 
 
 def main():
