@@ -295,6 +295,22 @@ local function snapshot()
     }
   end
 
+  -- The demo world, as its own pick rather than as a state one of the three
+  -- versions happens to be in.
+  --
+  -- It was reachable only through a version with no cartridge behind it, which
+  -- on a machine that HAS the cartridges made it unreachable: choosing Red
+  -- there starts Red, correctly, and the demo hid behind whichever game had
+  -- not been imported. It is a different thing from a game, so it gets its own
+  -- row. No save slots, because there is nothing in it to save.
+  local okD, demo = pcall(RomImporter.demoInstalled, "red")
+  if okD and demo then
+    games[#games + 1] = {
+      id = "demo", title = "Demo world", ready = true,
+      slots = {}, activeSlot = nil,
+    }
+  end
+
   local mods = {}
   local okM, list = pcall(LauncherMods.list)
   if okM and type(list) == "table" then
@@ -347,6 +363,11 @@ local function applyCommand(cmd)
   -- its own commands; this module only decides that they are not its
   -- business.
   if require("src.core.NativeEditor").command(cmd) then return end
+
+  -- The demo row is not a game and has no saves. Its id would otherwise reach
+  -- SaveData as a version and have it lay out a save directory for a game that
+  -- does not exist. Starting it is the one thing it accepts.
+  if cmd.version == "demo" and cmd.action ~= "boot" then return end
 
   local LauncherMods = require("src.mods.LauncherMods")
 
@@ -558,7 +579,7 @@ local function applyCommand(cmd)
     -- An unknown or missing version boots Red rather than nothing: the shell
     -- should never send one, and a launcher that silently does nothing is the
     -- worst of the available failures.
-    local known = false
+    local known = version == "demo"   -- not a version, but a valid thing to start
     for _, v in ipairs(VERSIONS) do
       if v == version then known = true end
     end

@@ -177,16 +177,21 @@ local function bootGame(version)
   -- version and overlay its extracted cache BEFORE anything requires generated
   -- data, so data/generated + assets/generated resolve to that version's files.
   local GameVersion = require("src.core.GameVersion")
-  GameVersion.set(version or os.getenv("POKEPORT_VERSION") or "red")
 
-  -- Nothing was imported: this version is on the review file, and what plays
-  -- is the app's own demo world rather than the game. Before mountVersion,
-  -- because there is no cache to mount and nothing here reads generated data.
-  if require("src.import.RomImporter").isDemo(GameVersion.get()) then
+  -- The demo world, either because it was asked for by name (the launcher's
+  -- own row) or because this version has nothing behind it but the review
+  -- file. Before GameVersion.set and mountVersion: "demo" is not a version,
+  -- there is no cache to mount, and nothing in here reads generated data.
+  local wantsDemo = version == "demo"
+    or require("src.import.RomImporter").isDemo(version
+         or os.getenv("POKEPORT_VERSION") or "red")
+  if wantsDemo then
     Demo = require("src.demo.DemoWorld")
     Demo:load()
     return
   end
+
+  GameVersion.set(version or os.getenv("POKEPORT_VERSION") or "red")
   -- A cartridge was imported after the demo: the demo has to let go of the
   -- frame, or update and draw keep reaching it instead of the game.
   Demo = nil

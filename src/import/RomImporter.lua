@@ -269,6 +269,22 @@ local function cartridgeReady(version)
   return marker == markerFor(version) and allRequiredFilesExist(version)
 end
 
+-- Whether the review file has been imported at all.
+--
+-- Separate from isDemo below, which answers a different question: this one is
+-- about the file, that one is about a version. The launcher needs this one to
+-- decide whether to offer the demo world as its own entry -- and it has to be
+-- offered even on a machine where every cartridge is in, or the one way to see
+-- the demo would be to own no games.
+function RomImporter.demoInstalled(version)
+  local CacheFs = require("src.import.CacheFs")
+  local saved = CacheFs.prefix
+  CacheFs.prefix = GameVersion.cachePrefix(version or "red")
+  local marker = CacheFs.read(DEMO_MARKER_PATH)
+  CacheFs.prefix = saved
+  return marker == DEMO_MARKER
+end
+
 -- Whether this version is standing in for a cartridge that was never
 -- imported -- the review file's doing (installDemo below).
 --
@@ -277,12 +293,7 @@ end
 -- from disk each time, like isReady, because the shell asks about all three
 -- versions from outside any of them.
 function RomImporter.isDemo(version)
-  local CacheFs = require("src.import.CacheFs")
-  local saved = CacheFs.prefix
-  CacheFs.prefix = GameVersion.cachePrefix(version or "red")
-  local marker = CacheFs.read(DEMO_MARKER_PATH)
-  CacheFs.prefix = saved
-  if marker ~= DEMO_MARKER then return false end
+  if not RomImporter.demoInstalled(version) then return false end
   return not cartridgeReady(version)
 end
 
