@@ -170,7 +170,7 @@ index e52e220..c94ca0e 100644
  #ifdef HAVE_CONFIG_H
  #	include <../config.h>
 diff --git a/src/common/ios.mm b/src/common/ios.mm
-index 44253ac..7406acc 100644
+index 8d82f85..fb3dcbf 100644
 --- a/src/common/ios.mm
 +++ b/src/common/ios.mm
 @@ -296,7 +296,15 @@ - (void)applicationBecameActive:(NSNotification *)note
@@ -899,10 +899,10 @@ index 0000000..b9b1c1e
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..dcc3c56
+index 0000000..bb0f8fa
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2651 @@
+@@ -0,0 +1,2664 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -959,6 +959,7 @@ index 0000000..dcc3c56
 +#import <CompositorServices/CompositorServices.h>
 +#import <GameController/GameController.h>
 +#import <Metal/Metal.h>
++#import <objc/message.h>
 +#import <simd/simd.h>
 +
 +namespace love
@@ -1975,9 +1976,21 @@ index 0000000..dcc3c56
 +// The devices worth asking ARKit about.
 +static NSArray<id<GCDevice>> *spatialDevices(void)
 +{
-+	if (@available(visionOS 27.0, *))
++	// Through the runtime, not by name.
++	//
++	// GCSpatialAccessory is visionOS 27, and naming it in the source makes the
++	// 27 SDK a build requirement -- which it must not be: the CI runner builds
++	// with whatever Xcode is selected on it, and an older one fails here with
++	// "use of undeclared identifier 'GCSpatialAccessory'", an error that says
++	// nothing about SDKs. Asking the runtime compiles against any SDK and still
++	// finds the class on a system that has it. Same reason the spatial
++	// notifications below are watched by string.
++	Class spatialAccessory = NSClassFromString(@"GCSpatialAccessory");
++	SEL spatialAccessories = NSSelectorFromString(@"spatialAccessories");
++	if (spatialAccessory != nil && [spatialAccessory respondsToSelector:spatialAccessories])
 +	{
-+		NSArray *spatial = GCSpatialAccessory.spatialAccessories;
++		NSArray *spatial = ((NSArray *(*)(Class, SEL))objc_msgSend)(spatialAccessory,
++		                                                            spatialAccessories);
 +		if (spatial.count > 0)
 +			return spatial;
 +	}
