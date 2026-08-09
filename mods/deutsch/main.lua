@@ -45,6 +45,17 @@ return function(mod)
   -- the first code the page owns; 0x100 and up is free space above the
   -- vanilla pages, so a new alphabet never collides with them.
   for id, page in pairs(catalog("font")) do
+    -- THROUGH mod:path, or the sheet is never found.
+    --
+    -- Font.load hands the image straight to the asset loader, and that
+    -- loader only rewrites paths into the derived cache -- everything else is
+    -- resolved against the GAME's directory, where a mod's own file does not
+    -- exist. The load sits inside a pcall, so the page is skipped in silence
+    -- and every glyph on it draws as a blank. Which is exactly what German
+    -- looked like: the right words with holes where the umlauts belong.
+    if type(page) == "table" and type(page.image) == "string" then
+      page.image = mod.path .. "/" .. page.image
+    end
     mod.content.font:register(id, page)
   end
   -- charmap: which byte sequence draws which code
