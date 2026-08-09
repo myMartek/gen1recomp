@@ -166,6 +166,14 @@ targets:
         buildPhase: resources
         type: file
         optional: true
+      # The app icon. visionOS wants three layers rather than one image --
+      # the system parallaxes them as the wearer looks at it -- so this is a
+      # .solidimagestack in an asset catalogue rather than a PNG in the plist.
+      # The catalogue is a normal source entry, not a folder reference: it has
+      # to be COMPILED, and a folder reference would copy the .xcassets in
+      # whole and leave the app with no icon at all.
+      - path: resources/Assets.xcassets
+        buildPhase: resources
       # Folder references, so each .lproj lands in the bundle root under its
       # own name -- which is where the system looks for a language. English is
       # the development region and the fallback: a key missing from de.lproj
@@ -235,6 +243,7 @@ targets:
         # GENERATE the file at the given path -- aiming them at a hand-written
         # plist silently overwrites it, and the app then ships without its
         # scene manifest or usage descriptions and refuses to launch.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: $(SRCROOT)/overlays/love-visionos.plist
         CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/overlays/gen1recomp-visionos.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.gen1recomp.xr
@@ -300,6 +309,14 @@ targets:
         buildPhase: resources
         type: file
         optional: true
+      # The app icon. visionOS wants three layers rather than one image --
+      # the system parallaxes them as the wearer looks at it -- so this is a
+      # .solidimagestack in an asset catalogue rather than a PNG in the plist.
+      # The catalogue is a normal source entry, not a folder reference: it has
+      # to be COMPILED, and a folder reference would copy the .xcassets in
+      # whole and leave the app with no icon at all.
+      - path: resources/Assets.xcassets
+        buildPhase: resources
       # Folder references, so each .lproj lands in the bundle root under its
       # own name -- which is where the system looks for a language. English is
       # the development region and the fallback: a key missing from de.lproj
@@ -363,6 +380,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: de.martek.pocketsim
         MARKETING_VERSION: "0.0.0"
         CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_FILE: $(SRCROOT)/overlays/love-visionos.plist
         CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/overlays/gen1recomp-visionos.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/native/gen1recomp-Bridging-Header.h
