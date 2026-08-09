@@ -171,7 +171,16 @@ local function mergeDefaults(decoded, version)
   local save = defaultsSave()
   for k, v in pairs(decoded) do save[k] = v end
   save.lastHeal = { map = save.player.map, x = save.player.x, y = save.player.y }
-  save.lastOutdoor = save.lastOutdoor or { id = save.player.map }
+  -- WITH COORDINATES. Vanilla SRAM has no field for "the last outdoor tile",
+  -- so this is reconstructed -- and it used to be reconstructed as a map name
+  -- with no position at all. Leaving a building falls back to this pair, and
+  -- a nil one puts the player at whatever 0,0 happens to be.
+  save.lastOutdoor = save.lastOutdoor
+    or { id = save.player.map, x = save.player.x, y = save.player.y }
+  -- Likewise the two player fields the decode does not produce. A nil facing
+  -- reaches setMap as the direction to stand in.
+  save.player.facing = save.player.facing or "down"
+  if save.player.surfing == nil then save.player.surfing = false end
   if version ~= nil then
     save.meta = save.meta or {}
     save.meta.version = version

@@ -397,36 +397,39 @@ local function applyCommand(cmd)
   if cmd.action == "importSlot" and type(cmd.version) == "string"
      and type(cmd.file) == "string" then
     local SaveData = require("src.core.SaveData")
-    local okC, slotId = pcall(SaveData.createSlot, cmd.version)
-    Logger.info("native shell: import %s file=%s slot=%s",
-                tostring(cmd.version), tostring(cmd.file), tostring(slotId))
-    if okC and slotId then
-      local ok, data = pcall(love.filesystem.read, cmd.file)
-      Logger.info("native shell: import read=%s bytes=%s",
-                  tostring(ok), tostring(data and #data))
-      if ok and data then
-        -- A VANILLA .sav COMES BACK THROUGH THE CONVERTER.
+    local ok, data = pcall(love.filesystem.read, cmd.file)
+    if ok and type(data) == "string" then
+      if #data == 32768 then
+        -- THROUGH THE PATH THAT ALREADY WORKS.
         --
-        -- That is what export hands out and what an editor gives back, so it
-        -- is the shape to expect: 32768 bytes of SRAM, decoded into a save
-        -- table and written as a slot. Anything else is taken for one of our
-        -- own slot files and written through unchanged, which is what a
-        -- straight copy between two installs is.
-        local okW = pcall(function()
-          local SaveConvert = require("src.save_convert.SaveConvert")
-          local save = SaveConvert.importSav(data, nil, cmd.version)
-          if save then
-            assert(SaveData.writeSlot(cmd.version, slotId, save))
-          else
+        -- This used to convert and write the slot by hand, and quietly left
+        -- out the three things SaveFileIO does after the conversion: name the
+        -- game version to SaveConvert, tag save.version, and re-stamp
+        -- save.meta. SaveConvert leaves meta.format as the LABEL
+        -- "gen1_import", and SaveData's migration pass compares that field
+        -- numerically -- so the slot imported fine, listed fine, and took the
+        -- game down with "attempt to compare string with number" the moment
+        -- it was loaded. SaveFileIO.importToSlot had the comment explaining
+        -- exactly that, three lines long, in the file next door.
+        local okI, slotOrErr = require("src.import.SaveFileIO")
+                                 .importToSlot(data, cmd.version)
+        Logger.info("native shell: import %s -> %s",
+                    tostring(cmd.version), tostring(slotOrErr))
+      else
+        -- Not a battery save: one of our own slot files, copied straight
+        -- across from another install. Written through unchanged.
+        local okC, slotId = pcall(SaveData.createSlot, cmd.version)
+        if okC and slotId then
+          local okW = pcall(function()
             local dest = SaveData.slotDiskPath(cmd.version, slotId)
             local fh = dest and io.open(dest, "wb")
             if not fh then error("no destination", 0) end
             fh:write(data)
             fh:close()
-          end
-        end)
-        Logger.info("native shell: import wrote=%s", tostring(okW))
-        if not okW then pcall(SaveData.deleteSlot, cmd.version, slotId) end
+          end)
+          if not okW then pcall(SaveData.deleteSlot, cmd.version, slotId) end
+          Logger.info("native shell: import raw slot wrote=%s", tostring(okW))
+        end
       end
     end
     pcall(love.filesystem.remove, cmd.file)
@@ -436,7 +439,6 @@ local function applyCommand(cmd)
 
   -- EXPORT AS A REAL BATTERY SAVE, not as our own slot file.
   --
-  -- There is no save editor in this project, and there does not need to be:
   -- SaveConvert already speaks the vanilla 32768-byte Gen 1 SRAM image in
   -- both directions, and every editor ever written for Red and Blue speaks
   -- that. Handing out slotN.lua would hand out something only this program
@@ -580,6 +582,11 @@ function NativeShell.begin(boot, edit)
   -- A stale command from the last run must not boot the game before the
   -- player has chosen anything.
   pcall(love.filesystem.remove, COMMAND_FILE)
+  -- Nor a stale export: the window presents a share sheet whenever this field
+  -- appears, and it survived in the snapshot, so every launch after an export
+  -- re-opened the sheet over the launcher for a file the player had already
+  -- dealt with.
+  exportFile = nil
   publish()
   Logger.info("native shell: launcher handed to the visionOS window")
 end

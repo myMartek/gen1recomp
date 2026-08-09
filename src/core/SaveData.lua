@@ -894,7 +894,13 @@ function SaveData.runMigrations(save, modChains, activeMods)
   end)
   -- every step whose from-format the save has not passed yet runs, in
   -- (from, registration) order; a save at the current format runs none
-  local fmt = (save.meta and save.meta.format) or 1
+  -- tonumber, because this field has been written as a LABEL more than once:
+  -- SaveConvert stamps "gen1_import" on a freshly converted battery save, and
+  -- any caller that forgets to re-stamp it hands us a string here. Comparing
+  -- it took the game down at load. Falling back to 1 is also the right
+  -- answer rather than merely a safe one -- a save whose format cannot be
+  -- read has passed no migration, so every one of them should run.
+  local fmt = tonumber(save.meta and save.meta.format) or 1
   for _, m in ipairs(coreMigrations) do
     if m.from >= fmt then m.fn(save) end
   end
