@@ -47,6 +47,14 @@ struct GRMon: Decodable, Hashable, Identifiable {
     var displayName: String { nickname.isEmpty ? species : nickname }
 }
 
+/// A species with its Pokédex number, in dex order -- the order the game
+/// lists them in, which is not the order their ids sort in.
+struct GRSpecies: Decodable, Hashable, Identifiable {
+    let id: String
+    let dex: Int
+    var label: String { dex > 0 ? String(format: "#%03d  %@", dex, id) : id }
+}
+
 struct GRItemRow: Decodable, Hashable, Identifiable {
     let id: String
     let count: Int
@@ -127,7 +135,7 @@ struct GREditorState: Decodable {
     let dex: GRDex
     let events: GREvents
     let itemCatalog: [String]?
-    let speciesCatalog: [String]?
+    let speciesCatalog: [GRSpecies]?
     let moveCatalog: [String]?
     let map: GRMapState
     let page: Int

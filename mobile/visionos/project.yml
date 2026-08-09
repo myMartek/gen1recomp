@@ -166,6 +166,18 @@ targets:
         buildPhase: resources
         type: file
         optional: true
+      # Folder references, so each .lproj lands in the bundle root under its
+      # own name -- which is where the system looks for a language. English is
+      # the development region and the fallback: a key missing from de.lproj
+      # resolves out of en.lproj, and one missing from both resolves to
+      # itself, so an untranslated string reads as English rather than as an
+      # identifier.
+      - path: resources/en.lproj
+        buildPhase: resources
+        type: folder
+      - path: resources/de.lproj
+        buildPhase: resources
+        type: folder
     dependencies:
       - target: liblove
       - framework: deps/luajit.xcframework
@@ -288,6 +300,18 @@ targets:
         buildPhase: resources
         type: file
         optional: true
+      # Folder references, so each .lproj lands in the bundle root under its
+      # own name -- which is where the system looks for a language. English is
+      # the development region and the fallback: a key missing from de.lproj
+      # resolves out of en.lproj, and one missing from both resolves to
+      # itself, so an untranslated string reads as English rather than as an
+      # identifier.
+      - path: resources/en.lproj
+        buildPhase: resources
+        type: folder
+      - path: resources/de.lproj
+        buildPhase: resources
+        type: folder
     dependencies:
       - target: liblove
       - framework: deps/luajit.xcframework

@@ -897,7 +897,14 @@ function Game:restoreSave(loaded, recovered)
   self.stack:push(self.overworld, loaded.player.map,
                   loaded.player.x, loaded.player.y, loaded.player.facing)
   self.saveReport = report
-  if not SaveData.emptyReport(report) then
+  -- NOT ON A HEADSET. There the report is a 2D screen pushed in front of the
+  -- overworld, so it arrives as a panel to dismiss before the world appears
+  -- -- and the thing it most often has to say there is the one thing nobody
+  -- wants read out: an imported save records no mods (it came from a vanilla
+  -- battery file and never saw one), so every load of one announces that a
+  -- mod has been added. True, and useless. The log below still keeps it, so a
+  -- real quarantine is recorded rather than lost.
+  if not SaveData.emptyReport(report) and not love.xr then
     -- the report screen is a Screens id so mods (or the ui milestone) own
     -- its looks; until one exists the log keeps a quarantine from being
     -- silent
@@ -909,6 +916,9 @@ function Game:restoreSave(loaded, recovered)
       local notice = SaveData.modsDiffNotice(modsDiff, loaded.meta)
       if notice then Logger.warn("%s", notice) end
     end
+  elseif not SaveData.emptyReport(report) then
+    Logger.warn("load report (not shown): %d mons quarantined, %d items removed, %d maps remapped",
+      #report.lostMons, #report.lostItems, #report.remappedMaps)
   end
   if ModRuntime.wants("save.loaded") then
     ModRuntime.emit("save.loaded",

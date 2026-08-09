@@ -221,7 +221,7 @@ struct GRLauncherView: View {
                     // Unimported versions stay in the list rather than being
                     // hidden: "Blue is missing its ROM" is useful, "Blue does
                     // not exist" is not.
-                    Text(g.ready ? g.title : "\(g.title) — no ROM").tag(g.id)
+                    Text(g.ready ? g.title : tr("game.noRom", g.title)).tag(g.id)
                 }
             }
             .pickerStyle(.menu)
@@ -231,7 +231,7 @@ struct GRLauncherView: View {
 
     private func savesSection(_ game: GRGame) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Save").font(.title2.weight(.medium))
+            Text(trKey("section.saves")).font(.title2.weight(.medium))
 
             if !game.ready {
                 Text("Import this game's ROM to play it.")
@@ -265,11 +265,11 @@ struct GRLauncherView: View {
                                 if slot.exists {
                                     Button {
                                         shell.editSlot(version: game.id, slot: slot.id)
-                                    } label: { Label("Edit save…", systemImage: "slider.horizontal.3") }
+                                    } label: { Label(trKey("Edit save…"), systemImage: "slider.horizontal.3") }
                                 }
                                 Button(role: .destructive) {
                                     pendingDelete = (game.id, slot.id)
-                                } label: { Label("Delete", systemImage: "trash") }
+                                } label: { Label(trKey("Delete"), systemImage: "trash") }
                             } label: {
                                 Image(systemName: "ellipsis.circle")
                                     .foregroundStyle(.secondary)
@@ -311,7 +311,7 @@ struct GRLauncherView: View {
             guard let version, case .success(let urls) = result,
                   let url = urls.first else { return }
             romMessage = shell.importSlot(version: version, from: url)
-                ? "Save imported." : "That save could not be read."
+                ? tr("Save imported.") : tr("That save could not be read.")
         }
     }
 
@@ -321,7 +321,7 @@ struct GRLauncherView: View {
                 Button("Play in VR") { play(game.id) }
                     .buttonStyle(.borderedProminent)
             }
-            Button(game.ready ? "Replace ROM…" : "Import ROM…") {
+            Button(trKey(game.ready ? "Replace ROM…" : "Import ROM…")) {
                 showRomPicker = true
             }
         }
@@ -378,7 +378,7 @@ struct GRLauncherView: View {
 
             ForEach(shell.settings) { setting in
                 HStack {
-                    Text(setting.label)
+                    Text(trKey(setting.label))
                     Spacer()
                     Picker(setting.label, selection: Binding(
                         get: { setting.currentLabel },
@@ -389,7 +389,7 @@ struct GRLauncherView: View {
                         }
                     )) {
                         ForEach(setting.choices) { choice in
-                            Text(choice.label).tag(choice.label)
+                            Text(trKey(choice.label)).tag(choice.label)
                         }
                     }
                     .pickerStyle(.menu)
@@ -426,7 +426,7 @@ struct GRLauncherView: View {
                 .foregroundStyle(.secondary)
 
             Button(action: toggle) {
-                Text(model.immersiveState == .open ? "Leave VR" : "Enter VR")
+                Text(trKey(model.immersiveState == .open ? "Leave VR" : "Enter VR"))
                     .frame(maxWidth: 180)
             }
             .font(.title3)

@@ -1,0 +1,145 @@
+/* The development language. Every key lives here first; de.lproj carries the
+   same keys and anything missing there falls back to this file. */
+
+/* --- launcher --- */
+"Pocket Sim" = "Pocket Sim";
+"Game" = "Game";
+"Save" = "Save";
+"Settings" = "Settings";
+"Mods" = "Mods";
+"New save" = "New save";
+"Import save…" = "Import save…";
+"Edit save…" = "Edit save…";
+"Delete" = "Delete";
+"Play in VR" = "Play in VR";
+"Enter VR" = "Enter VR";
+"Leave VR" = "Leave VR";
+"Import ROM…" = "Import ROM…";
+"Replace ROM…" = "Replace ROM…";
+"Import this game's ROM to play it." = "Import this game's ROM to play it.";
+"No saves yet — starting will begin a new game." = "No saves yet — starting will begin a new game.";
+"Waiting for the game to start…" = "Waiting for the game to start…";
+"Delete this save?" = "Delete this save?";
+"This cannot be undone." = "This cannot be undone.";
+"Cancel" = "Cancel";
+"Save imported." = "Save imported.";
+"That save could not be read." = "That save could not be read.";
+"Empty slot" = "Empty slot";
+"New game" = "New game";
+"starting…" = "starting…";
+
+/* the one setting the headset shows, and its choices */
+"View" = "View";
+"First Person" = "First Person";
+"Third Person" = "Third Person";
+
+/* --- save editor: chrome --- */
+"Save Editor" = "Save Editor";
+"Opening the save…" = "Opening the save…";
+"Unsaved" = "Unsaved";
+"Reload" = "Reload";
+"Close" = "Close";
+"Save validates clean" = "Save validates clean";
+"Save would not validate" = "Save would not validate";
+
+/* tabs */
+"Party" = "Party";
+"Boxes" = "Boxes";
+"Items" = "Items";
+"Trainer" = "Trainer";
+"Events" = "Events";
+"Dex" = "Dex";
+"Map" = "Map";
+
+/* --- party --- */
+"party.count" = "Party %lld/%lld";
+"inspector.for" = "Inspector — %@";
+"Add mon" = "Add mon";
+"Remove" = "Remove";
+"Confirm remove?" = "Confirm remove?";
+"Move up" = "Move up";
+"Move down" = "Move down";
+"Species" = "Species";
+"Pick species…" = "Pick species…";
+"Level" = "Level";
+"dv.hp" = "DV HP";
+"dv.attack" = "DV Attack";
+"dv.defense" = "DV Defense";
+"dv.speed" = "DV Speed";
+"dv.special" = "DV Special";
+"move.slot" = "Move %lld";
+"Cycle" = "Cycle";
+"Clear" = "Clear";
+"Reset moves" = "Reset moves";
+"Heal" = "Heal";
+
+/* --- boxes --- */
+"box.count" = "Box %lld/%lld";
+"box.stored" = "%lld stored";
+"Previous" = "Previous";
+"Next" = "Next";
+"Add to box" = "Add to box";
+"Withdraw" = "Withdraw";
+"Deposit" = "Deposit";
+"Release" = "Release";
+"Confirm release?" = "Confirm release?";
+
+/* --- items --- */
+"Bag" = "Bag";
+"PC storage" = "PC storage";
+"Add an item" = "Add an item";
+"Search" = "Search";
+"Filter" = "Filter";
+"Empty" = "Empty";
+"Drop" = "Drop";
+"To bag" = "To bag";
+"To PC" = "To PC";
+
+/* --- trainer --- */
+"Names" = "Names";
+"Player" = "Player";
+"Rival" = "Rival";
+"Set" = "Set";
+"name.limit" = "Up to %lld characters; the game has no lower case.";
+"Money" = "Money";
+"money.max" = "Max (%@)";
+"Badges" = "Badges";
+
+/* --- events --- */
+"events.count" = "Event flags — %lld";
+"Clear all" = "Clear all";
+"Confirm clear?" = "Confirm clear?";
+
+/* --- dex --- */
+"dex.counts" = "Pokédex — %lld seen, %lld owned";
+"See all" = "See all";
+"Own all" = "Own all";
+"Stamp from party" = "Stamp from party";
+"seen" = "seen";
+"owned" = "owned";
+
+/* --- map --- */
+"Where the player is" = "Where the player is";
+"map.player" = "Player: %@";
+"map.lastOutdoor" = "Last outdoor: %@";
+"map.lastHeal" = "Last heal: %@";
+"map.pick" = "Pick a map — %lld";
+"map.selected" = "Selected: %@";
+"Cell" = "Cell";
+"map.cell" = "Cell in the engine: (%lld, %lld)";
+"Set cell" = "Set cell";
+"Put player here" = "Put player here";
+"Set last outdoor" = "Set last outdoor";
+"Set last heal" = "Set last heal";
+
+/* --- save rows --- */
+"slot.badges.one" = "%lld badge";
+"slot.badges.other" = "%lld badges";
+"slot.seen" = "%lld seen";
+"slot.save" = "Save %@";
+"game.noRom" = "%@ — no ROM";
+
+/* "Save" is a noun in the launcher (the list of them) and a verb in the
+   editor (write the file). One key for both put the wrong word in German. */
+"section.saves" = "Save";
+"action.save" = "Save";

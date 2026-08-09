@@ -109,6 +109,30 @@ local function monSnapshot(mon, index)
   }
 end
 
+-- Species BY DEX NUMBER, with the number, because that is the order the game
+-- itself lists them in and the one a player thinks in -- alphabetical put
+-- Abra first and Bulbasaur ninth. Catalog.build sorts by id and cannot be
+-- changed without moving every other list it feeds, so the reordering is
+-- here.
+local function speciesRows(S)
+  local rows = {}
+  for _, id in ipairs(S.cat.species) do
+    local def = (S.data and S.data.pokemon or {})[id]
+    rows[#rows + 1] = { id = id, dex = tonumber(def and def.dex) or 0 }
+  end
+  table.sort(rows, function(a, b)
+    -- Anything with no number (a mod's own species) sorts after the 151 by
+    -- name rather than all colliding at position zero.
+    if a.dex ~= b.dex then
+      if a.dex == 0 then return false end
+      if b.dex == 0 then return true end
+      return a.dex < b.dex
+    end
+    return a.id < b.id
+  end)
+  return rows
+end
+
 local function matches(name, query)
   if query == nil or query == "" then return true end
   return name:upper():find(query:upper(), 1, true) ~= nil
@@ -256,7 +280,12 @@ local function snapshot()
       -- The catalogues the pickers offer. Filtered by the same query the
       -- lists use, so one text field drives both sides of an ADD row.
       itemCatalog = list((page(S.cat.items, view.itemQuery))),
-      speciesCatalog = list((page(S.cat.species, view.itemQuery))),
+      -- WHOLE, and unfiltered. The species picker is a sheet with its own
+      -- search field and filters what it was given; sharing the item query
+      -- would have made typing in the bag change what the picker offers, and
+      -- paging it would have made a search miss what fell off the end. 151
+      -- names and numbers is a few kilobytes.
+      speciesCatalog = list(speciesRows(S)),
       moveCatalog = list((page(S.cat.moves, view.itemQuery))),
       map = mapSection(S),
       queries = { item = view.itemQuery, event = view.eventQuery, map = view.mapQuery },

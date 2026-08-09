@@ -34,10 +34,13 @@ struct GRSlot: Identifiable, Equatable, Decodable {
 
     /// The same meta line the Lua launcher prints under a save row.
     var summary: String {
-        guard exists else { return "Empty slot" }
+        guard exists else { return tr("Empty slot") }
         var parts: [String] = []
-        if let b = badges { parts.append("\(b) badge\(b == 1 ? "" : "s")") }
-        if let d = dexCount { parts.append("\(d) seen") }
+        // Two badge keys rather than a .stringsdict: English needs the plural
+        // and German does not (one Orden, two Orden), which two keys say in
+        // one line each.
+        if let b = badges { parts.append(tr(b == 1 ? "slot.badges.one" : "slot.badges.other", b)) }
+        if let d = dexCount { parts.append(tr("slot.seen", d)) }
         if let t = timeText { parts.append(t) }
         return parts.joined(separator: " · ")
     }
@@ -45,7 +48,7 @@ struct GRSlot: Identifiable, Equatable, Decodable {
     var title: String {
         if let l = label, !l.isEmpty { return l }
         if let n = name, !n.isEmpty { return n }
-        return exists ? "Save \(id)" : "New game"
+        return exists ? tr("slot.save", id) : tr("New game")
     }
 }
 

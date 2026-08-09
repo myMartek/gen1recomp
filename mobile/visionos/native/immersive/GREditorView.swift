@@ -38,7 +38,7 @@ struct GREditorView: View {
                 get: { tab },
                 set: { editor.setTab($0.rawValue.lowercased()) }
             )) {
-                ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(Tab.allCases) { Text(trKey($0.rawValue)).tag($0) }
             }
             .pickerStyle(.segmented)
 
@@ -83,7 +83,7 @@ struct GREditorView: View {
                     .padding(.horizontal, 8).padding(.vertical, 3)
                     .background(.orange.opacity(0.25), in: Capsule())
             }
-            Button("Save") { editor.save() }
+            Button(trKey("action.save")) { editor.save() }
                 .disabled(!(editor.state?.dirty ?? false))
             Button("Reload") { editor.reloadFile() }
             Button("Close") { editor.close() }
@@ -93,8 +93,11 @@ struct GREditorView: View {
     private func statusBar(_ s: GREditorState) -> some View {
         HStack(spacing: 10) {
             Circle().fill(s.valid ? .green : .red).frame(width: 8, height: 8)
-            Text(s.status.isEmpty ? (s.valid ? "Save validates clean" : "Save would not validate")
-                                  : s.status)
+            // The engine's own status line when there is one; it is written
+            // in the engine's language and passes through untouched.
+            Text(s.status.isEmpty
+                 ? tr(s.valid ? "Save validates clean" : "Save would not validate")
+                 : s.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -147,12 +150,13 @@ private struct GRSection<Content: View>: View {
 private struct PartyTab: View {
     let editor: GREditor
     let s: GREditorState
+    @State private var picking = false
 
     private var mons: [GRMon] { s.party ?? [] }
     private var selected: GRMon? { mons.first { $0.index == s.selectedParty } }
 
     var body: some View {
-        GRSection(title: "Party \(mons.count)/\(s.partyMax)") {
+        GRSection(title: tr("party.count", mons.count, s.partyMax)) {
             ForEach(mons) { mon in
                 Button {
                     editor.selectParty(mon.index)
@@ -174,7 +178,7 @@ private struct PartyTab: View {
             }
             HStack {
                 Button("Add mon") { editor.partyAdd() }
-                Button(s.armed == "party-remove" ? "Confirm remove?" : "Remove",
+                Button(trKey(s.armed == "party-remove" ? "Confirm remove?" : "Remove"),
                        role: .destructive) { editor.partyRemove() }
                 Button("Move up") { editor.partyMove(-1) }
                 Button("Move down") { editor.partyMove(1) }
@@ -182,31 +186,38 @@ private struct PartyTab: View {
         }
 
         if let mon = selected {
-            GRSection(title: "Inspector — \(mon.displayName)") {
-                GRStepRow(title: "Species", value: mon.species, steps: [-1, 1]) {
+            GRSection(title: tr("inspector.for", mon.displayName)) {
+                GRStepRow(title: tr("Species"), value: mon.species, steps: [-1, 1]) {
                     editor.stepSpecies($0)
                 }
-                Menu("Pick species…") {
-                    ForEach((s.speciesCatalog ?? []).prefix(60), id: \.self) { id in
-                        Button(id) { editor.setSpecies(id) }
+                // A SHEET, not a menu. The list is 151 long and the menu it
+                // used to be was cut at 60 to stay usable -- which is why it
+                // stopped somewhere in the J's, on the one control whose job
+                // is to reach any of them. A sheet can hold the whole list
+                // and carry a search field.
+                Button(trKey("Pick species…")) { picking = true }
+                    .sheet(isPresented: $picking) {
+                        GRSpeciesPicker(all: s.speciesCatalog ?? []) { id in
+                            editor.setSpecies(id)
+                            picking = false
+                        }
                     }
-                }
-                GRStepRow(title: "Level", value: "\(mon.level)", steps: [-10, -1, 1, 10]) {
+                GRStepRow(title: tr("Level"), value: "\(mon.level)", steps: [-10, -1, 1, 10]) {
                     editor.setLevel(max(1, min(100, mon.level + $0)))
                 }
                 Divider()
-                dvRow("HP", "hp", mon.dvs.hp)
-                dvRow("Attack", "attack", mon.dvs.attack)
-                dvRow("Defense", "defense", mon.dvs.defense)
-                dvRow("Speed", "speed", mon.dvs.speed)
-                dvRow("Special", "special", mon.dvs.special)
+                dvRow("dv.hp", "hp", mon.dvs.hp)
+                dvRow("dv.attack", "attack", mon.dvs.attack)
+                dvRow("dv.defense", "defense", mon.dvs.defense)
+                dvRow("dv.speed", "speed", mon.dvs.speed)
+                dvRow("dv.special", "special", mon.dvs.special)
                 Divider()
                 Text("Stats  HP \(mon.stats.hp) · Atk \(mon.stats.attack) · Def \(mon.stats.defense) · Spd \(mon.stats.speed) · Spc \(mon.stats.special)")
                     .font(.caption.monospaced()).foregroundStyle(.secondary)
                 Divider()
                 ForEach(mon.moves, id: \.slot) { move in
                     HStack {
-                        Text("Move \(move.slot)").frame(width: 110, alignment: .leading)
+                        Text(tr("move.slot", move.slot)).frame(width: 110, alignment: .leading)
                         Text(move.id.isEmpty ? "—" : move.id).font(.body.monospaced())
                         Spacer()
                         Text("PP \(move.pp)").foregroundStyle(.secondary)
@@ -222,8 +233,8 @@ private struct PartyTab: View {
         }
     }
 
-    private func dvRow(_ title: String, _ key: String, _ value: Int) -> some View {
-        GRStepRow(title: "DV \(title)", value: "\(value)", steps: [-1, 1]) {
+    private func dvRow(_ label: String, _ key: String, _ value: Int) -> some View {
+        GRStepRow(title: tr(label), value: "\(value)", steps: [-1, 1]) {
             editor.setDv(key, value + $0)
         }
     }
@@ -236,12 +247,12 @@ private struct BoxesTab: View {
     let s: GREditorState
 
     var body: some View {
-        GRSection(title: "Box \(s.box.selected)/\(s.box.count)") {
+        GRSection(title: tr("box.count", s.box.selected, s.box.count)) {
             HStack {
                 Button("Previous") { editor.stepBox(-1) }
                 Button("Next") { editor.stepBox(1) }
                 Spacer()
-                Text("\((s.box.mons ?? []).count) stored").foregroundStyle(.secondary)
+                Text(tr("box.stored", (s.box.mons ?? []).count)).foregroundStyle(.secondary)
             }
             ForEach(s.box.mons ?? []) { mon in
                 Button {
@@ -268,7 +279,7 @@ private struct BoxesTab: View {
                 // Two presses: Ops arms destructive verbs and commits on the
                 // second within its own window, so the label follows the
                 // engine rather than a timer of ours.
-                Button(s.armed == "box-release" ? "Confirm release?" : "Release",
+                Button(trKey(s.armed == "box-release" ? "Confirm release?" : "Release"),
                        role: .destructive) { editor.release() }
             }
         }
@@ -283,7 +294,7 @@ private struct ItemsTab: View {
     @State private var query = ""
 
     var body: some View {
-        GRSection(title: "Bag") {
+        GRSection(title: tr("Bag")) {
             ForEach(s.bag ?? []) { row in
                 HStack {
                     Text(row.id).font(.body.monospaced())
@@ -297,7 +308,7 @@ private struct ItemsTab: View {
             if (s.bag ?? []).isEmpty { Text("Empty").foregroundStyle(.secondary) }
         }
 
-        GRSection(title: "PC storage") {
+        GRSection(title: tr("PC storage")) {
             ForEach(s.pc ?? []) { row in
                 HStack {
                     Text(row.id).font(.body.monospaced())
@@ -311,7 +322,7 @@ private struct ItemsTab: View {
             if (s.pc ?? []).isEmpty { Text("Empty").foregroundStyle(.secondary) }
         }
 
-        GRSection(title: "Add an item") {
+        GRSection(title: tr("Add an item")) {
             HStack {
                 TextField("Search", text: $query)
                     .textFieldStyle(.roundedBorder)
@@ -343,7 +354,7 @@ private struct TrainerTab: View {
         // than on every keystroke: each one is a command and a file write on
         // the other side, and a name typed a letter at a time would be ten of
         // them.
-        GRSection(title: "Names") {
+        GRSection(title: tr("Names")) {
             HStack {
                 Text("Player").frame(width: 90, alignment: .leading)
                 TextField(s.player, text: $playerName)
@@ -358,17 +369,17 @@ private struct TrainerTab: View {
                     .onSubmit { editor.setRivalName(rivalName) }
                 Button("Set") { editor.setRivalName(rivalName) }
             }
-            Text("Up to \(s.nameMax) characters; the game has no lower case.")
+            Text(tr("name.limit", s.nameMax))
                 .font(.caption).foregroundStyle(.secondary)
         }
 
-        GRSection(title: "Money") {
-            GRStepRow(title: "Money", value: "$\(s.money)",
+        GRSection(title: tr("Money")) {
+            GRStepRow(title: tr("Money"), value: "$\(s.money)",
                       steps: [-1000, -100, 100, 1000]) { editor.addMoney($0) }
-            Button("Max ($\(s.moneyMax))") { editor.maxMoney() }
+            Button(tr("money.max", "$\(s.moneyMax)")) { editor.maxMoney() }
         }
 
-        GRSection(title: "Badges") {
+        GRSection(title: tr("Badges")) {
             ForEach(s.badges ?? []) { badge in
                 Toggle(badge.id, isOn: Binding(
                     get: { badge.on },
@@ -386,13 +397,13 @@ private struct EventsTab: View {
     @State private var query = ""
 
     var body: some View {
-        GRSection(title: "Event flags — \(s.events.total)") {
+        GRSection(title: tr("events.count", s.events.total)) {
             HStack {
                 TextField("Search", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { editor.query(event: query) }
                 Button("Filter") { editor.query(event: query) }
-                Button(s.armed == "clear-flags" ? "Confirm clear?" : "Clear all",
+                Button(trKey(s.armed == "clear-flags" ? "Confirm clear?" : "Clear all"),
                        role: .destructive) { editor.clearTable("flags") }
             }
             ForEach((s.events.rows ?? []).prefix(60)) { row in
@@ -413,12 +424,12 @@ private struct DexTab: View {
     @State private var query = ""
 
     var body: some View {
-        GRSection(title: "Pokédex — \(s.dex.seen) seen, \(s.dex.owned) owned") {
+        GRSection(title: tr("dex.counts", s.dex.seen, s.dex.owned)) {
             HStack {
                 Button("See all") { editor.dexSeeAll() }
                 Button("Own all") { editor.dexOwnAll() }
                 Button("Stamp from party") { editor.dexStamp() }
-                Button(s.armed == "dex-clear" ? "Confirm clear?" : "Clear",
+                Button(trKey(s.armed == "dex-clear" ? "Confirm clear?" : "Clear"),
                        role: .destructive) { editor.dexClear() }
             }
             HStack {
@@ -455,22 +466,22 @@ private struct MapTab: View {
     @State private var cellY = 0
 
     var body: some View {
-        GRSection(title: "Where the player is") {
-            Text("Player: \(s.map.playerAt)").font(.body.monospaced())
-            Text("Last outdoor: \(s.map.lastOutdoor.isEmpty ? "—" : s.map.lastOutdoor)")
+        GRSection(title: tr("Where the player is")) {
+            Text(tr("map.player", s.map.playerAt)).font(.body.monospaced())
+            Text(tr("map.lastOutdoor", s.map.lastOutdoor.isEmpty ? "—" : s.map.lastOutdoor))
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
-            Text("Last heal: \(s.map.lastHeal.isEmpty ? "—" : s.map.lastHeal)")
+            Text(tr("map.lastHeal", s.map.lastHeal.isEmpty ? "—" : s.map.lastHeal))
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
         }
 
-        GRSection(title: "Pick a map — \(s.map.total)") {
+        GRSection(title: tr("map.pick", s.map.total)) {
             HStack {
                 TextField("Search", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { editor.query(map: query) }
                 Button("Filter") { editor.query(map: query) }
             }
-            Text("Selected: \(s.map.selected.isEmpty ? "—" : s.map.selected)")
+            Text(tr("map.selected", s.map.selected.isEmpty ? "—" : s.map.selected))
                 .font(.body.monospaced())
             ForEach((s.map.rows ?? []).prefix(30), id: \.self) { id in
                 Button(id) { editor.selectMap(id) }
@@ -480,7 +491,7 @@ private struct MapTab: View {
             }
         }
 
-        GRSection(title: "Cell") {
+        GRSection(title: tr("Cell")) {
             // The engine's own map tab gets this from a click on a drawn map;
             // here it is two numbers, because a tile grid in a headset window
             // would be a picture of a map inside a window that is already one.
@@ -489,7 +500,7 @@ private struct MapTab: View {
                 Stepper("Y \(cellY)", value: $cellY, in: 0...255)
                 Button("Set cell") { editor.setCell(cellX, cellY) }
             }
-            Text("Cell in the engine: (\(s.map.cellX), \(s.map.cellY))")
+            Text(tr("map.cell", s.map.cellX, s.map.cellY))
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
             HStack {
                 Button("Put player here") { editor.setPlayerHere() }
@@ -497,5 +508,57 @@ private struct MapTab: View {
                 Button("Set last heal") { editor.setLastHeal() }
             }
         }
+    }
+}
+
+
+// MARK: - Picking a species
+
+/// The whole species list, in Pokédex order, with a search field.
+///
+/// Filtered here rather than over the bridge: the list is small, it is
+/// already in hand, and a round trip per keystroke would make typing feel
+/// like waiting. Matching is on the number as well as the name, so "25" finds
+/// Pikachu and "pika" does too.
+private struct GRSpeciesPicker: View {
+    let all: [GRSpecies]
+    let choose: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var shown: [GRSpecies] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { return all }
+        return all.filter {
+            $0.id.localizedCaseInsensitiveContains(q) || String($0.dex).hasPrefix(q)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(shown) { sp in
+                Button { choose(sp.id) } label: {
+                    HStack {
+                        Text(sp.dex > 0 ? String(format: "#%03d", sp.dex) : "—")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 56, alignment: .leading)
+                        Text(sp.id)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .searchable(text: $query)
+            .navigationTitle(trKey("Pick species…"))
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(trKey("Cancel")) { dismiss() }
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 520)
     }
 }

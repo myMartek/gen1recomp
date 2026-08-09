@@ -1,0 +1,142 @@
+/* Deutsch. Fehlt ein Schlüssel hier, greift en.lproj. */
+
+/* --- Launcher --- */
+"Pocket Sim" = "Pocket Sim";
+"Game" = "Spiel";
+"Save" = "Spielstand";
+"Settings" = "Einstellungen";
+"Mods" = "Mods";
+"New save" = "Neuer Spielstand";
+"Import save…" = "Spielstand importieren…";
+"Edit save…" = "Spielstand bearbeiten…";
+"Delete" = "Löschen";
+"Play in VR" = "In VR spielen";
+"Enter VR" = "VR betreten";
+"Leave VR" = "VR verlassen";
+"Import ROM…" = "ROM importieren…";
+"Replace ROM…" = "ROM ersetzen…";
+"Import this game's ROM to play it." = "Importiere die ROM dieses Spiels, um es zu spielen.";
+"No saves yet — starting will begin a new game." = "Noch keine Spielstände — Starten beginnt ein neues Spiel.";
+"Waiting for the game to start…" = "Warte auf den Start des Spiels…";
+"Delete this save?" = "Diesen Spielstand löschen?";
+"This cannot be undone." = "Das lässt sich nicht rückgängig machen.";
+"Cancel" = "Abbrechen";
+"Save imported." = "Spielstand importiert.";
+"That save could not be read." = "Dieser Spielstand konnte nicht gelesen werden.";
+"Empty slot" = "Leerer Platz";
+"New game" = "Neues Spiel";
+"starting…" = "startet…";
+
+"View" = "Ansicht";
+"First Person" = "Egoperspektive";
+"Third Person" = "Verfolgerperspektive";
+
+/* --- Editor: Rahmen --- */
+"Save Editor" = "Spielstand-Editor";
+"Opening the save…" = "Spielstand wird geöffnet…";
+"Unsaved" = "Ungesichert";
+"Reload" = "Neu laden";
+"Close" = "Schließen";
+"Save validates clean" = "Spielstand ist fehlerfrei";
+"Save would not validate" = "Spielstand wäre fehlerhaft";
+
+"Party" = "Team";
+"Boxes" = "Boxen";
+"Items" = "Items";
+"Trainer" = "Trainer";
+"Events" = "Events";
+"Dex" = "Dex";
+"Map" = "Karte";
+
+/* --- Team --- */
+"party.count" = "Team %lld/%lld";
+"inspector.for" = "Details — %@";
+"Add mon" = "Hinzufügen";
+"Remove" = "Entfernen";
+"Confirm remove?" = "Wirklich entfernen?";
+"Move up" = "Nach oben";
+"Move down" = "Nach unten";
+"Species" = "Art";
+"Pick species…" = "Art wählen…";
+"Level" = "Level";
+"dv.hp" = "DV KP";
+"dv.attack" = "DV Angriff";
+"dv.defense" = "DV Verteidigung";
+"dv.speed" = "DV Initiative";
+"dv.special" = "DV Spezial";
+"move.slot" = "Attacke %lld";
+"Cycle" = "Wechseln";
+"Clear" = "Leeren";
+"Reset moves" = "Attacken zurücksetzen";
+"Heal" = "Heilen";
+
+/* --- Boxen --- */
+"box.count" = "Box %lld/%lld";
+"box.stored" = "%lld gelagert";
+"Previous" = "Zurück";
+"Next" = "Weiter";
+"Add to box" = "In die Box legen";
+"Withdraw" = "Entnehmen";
+"Deposit" = "Einlagern";
+"Release" = "Freilassen";
+"Confirm release?" = "Wirklich freilassen?";
+
+/* --- Items --- */
+"Bag" = "Beutel";
+"PC storage" = "PC-Lager";
+"Add an item" = "Item hinzufügen";
+"Search" = "Suche";
+"Filter" = "Filtern";
+"Empty" = "Leer";
+"Drop" = "Wegwerfen";
+"To bag" = "In den Beutel";
+"To PC" = "Ins PC-Lager";
+
+/* --- Trainer --- */
+"Names" = "Namen";
+"Player" = "Spieler";
+"Rival" = "Rivale";
+"Set" = "Setzen";
+"name.limit" = "Bis zu %lld Zeichen; das Spiel kennt keine Kleinbuchstaben.";
+"Money" = "Geld";
+"money.max" = "Maximum (%@)";
+"Badges" = "Orden";
+
+/* --- Ereignisse --- */
+"events.count" = "Ereignis-Flags — %lld";
+"Clear all" = "Alle leeren";
+"Confirm clear?" = "Wirklich leeren?";
+
+/* --- Dex --- */
+"dex.counts" = "Pokédex — %lld gesehen, %lld gefangen";
+"See all" = "Alle gesehen";
+"Own all" = "Alle gefangen";
+"Stamp from party" = "Aus dem Team übernehmen";
+"seen" = "gesehen";
+"owned" = "gefangen";
+
+/* --- Karte --- */
+"Where the player is" = "Wo der Spieler steht";
+"map.player" = "Spieler: %@";
+"map.lastOutdoor" = "Zuletzt draußen: %@";
+"map.lastHeal" = "Zuletzt geheilt: %@";
+"map.pick" = "Karte wählen — %lld";
+"map.selected" = "Gewählt: %@";
+"Cell" = "Feld";
+"map.cell" = "Feld in der Engine: (%lld, %lld)";
+"Set cell" = "Feld setzen";
+"Put player here" = "Spieler hierher setzen";
+"Set last outdoor" = "„Zuletzt draußen“ setzen";
+"Set last heal" = "„Zuletzt geheilt“ setzen";
+
+/* --- Spielstandzeilen --- */
+"slot.badges.one" = "%lld Orden";
+"slot.badges.other" = "%lld Orden";
+"slot.seen" = "%lld gesehen";
+"slot.save" = "Spielstand %@";
+"game.noRom" = "%@ — keine ROM";
+
+/* „Save" ist im Launcher ein Hauptwort und im Editor ein Zeitwort. */
+"section.saves" = "Spielstände";
+"action.save" = "Sichern";
+"Ereignisse" = "Ereignisse";
