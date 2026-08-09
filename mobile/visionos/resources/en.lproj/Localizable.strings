@@ -151,3 +151,8 @@
 "moves.all" = "Every move";
 "moves.atLevel" = "Lv%lld";
 "moves.byTM" = "TM/HM";
+
+/* --- game language --- */
+"Language" = "Language";
+"English" = "English";
+"Deutsch" = "Deutsch";

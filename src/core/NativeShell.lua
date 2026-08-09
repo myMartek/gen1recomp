@@ -108,6 +108,11 @@ local function cycleChoices(cycle, labelFor, start)
   return out
 end
 
+-- The translation the Language row switches. One id rather than a scan of
+-- every mod that declares itself a language: the row offers two choices and
+-- has to name the one it means.
+local LANGUAGE_MOD = "deutsch"
+
 local function buildSettings()
   if SETTINGS then return SETTINGS end
   local ok, built = pcall(function()
@@ -160,6 +165,38 @@ local function buildSettings()
             pcall(function()
               require("src.render.Pipelines").setLevel("voxel", value)
             end)
+          end,
+        },
+        -- THE GAME'S LANGUAGE, as a setting rather than a mod row.
+        --
+        -- A translation IS a mod here (src/mods/Manifest.lua's `language`
+        -- flag), and the headset shows no mod list -- so without this the one
+        -- mod a player might actually want to switch would be unreachable.
+        -- English is the default because it is the language the ROM is in;
+        -- the choice persists because LauncherMods writes the enabled set to
+        -- the options file like every other mod toggle.
+        --
+        -- Mods merge at boot, so this takes effect on the next start. That is
+        -- why it sits in the launcher, where the next start is one tap away.
+        {
+          id = "language", label = "Language", default = "en",
+          choices = {
+            { value = "en", label = "English" },
+            { value = "de", label = "Deutsch" },
+          },
+          -- Straight on the options table this row was handed, NOT through
+          -- LauncherMods.setEnabled. That function loads the options, writes
+          -- its flag and saves -- and the caller here then saves the table it
+          -- loaded BEFORE the row ran, which puts the old value back. The
+          -- flag it writes is this same key, so writing it here is the same
+          -- thing without the race.
+          get = function(options)
+            local mods = options and options.mods
+            return (mods and mods[LANGUAGE_MOD] == true) and "de" or "en"
+          end,
+          set = function(options, value)
+            options.mods = options.mods or {}
+            options.mods[LANGUAGE_MOD] = (value == "de")
           end,
         },
       }

@@ -76,3 +76,9 @@ mobile/visionos/bundle_id.local
 *.sav
 *.sgm
 mobile/visionos/team.local
+
+# Translation worksheets. modkit writes the English behind every key into
+# these so an author has something to translate FROM -- which makes them
+# extracted ROM text, exactly like data/generated/. The mod beside them holds
+# only keys and the translator's own words and is committable; this is not.
+mods/*-worksheet/

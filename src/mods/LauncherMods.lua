@@ -96,12 +96,15 @@ function LauncherMods.deriveList(manifests, options)
   for _, m in ipairs(ordered) do
     byId[m.id] = m
     -- missing entry means enabled, matching the loader -- except experimental
-    -- mods, which stay off until the player opts in
+    -- mods, which stay off until the player opts in, and TRANSLATIONS, which
+    -- stay off for the same reason and a stronger one: installing one would
+    -- otherwise change every word in the game without anybody asking for it.
+    -- A player who wants German picks German.
     if mods[m.id] == false then
       -- stay off
     elseif mods[m.id] == true then
       enabledSet[m.id] = true
-    elseif not m.experimental then
+    elseif not m.experimental and not m.language then
       enabledSet[m.id] = true
     end
   end

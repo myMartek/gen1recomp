@@ -150,3 +150,8 @@
 "moves.all" = "Alle Attacken";
 "moves.atLevel" = "Lv%lld";
 "moves.byTM" = "TM/VM";
+
+/* --- Spielsprache --- */
+"Language" = "Sprache";
+"English" = "Englisch";
+"Deutsch" = "Deutsch";

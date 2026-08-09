@@ -221,7 +221,10 @@ end
 -- Applied over the shared defaults, never over what the player has already
 -- saved: mergeOptions keeps every key the file carries.
 local function headsetDefaults(o)
-  if not love.xr then return o end
+  -- `love` and not love.xr: this module is loaded headless too -- modkit
+  -- validates a mod without a LOVE at all, and indexing a nil global there
+  -- ended the run with "attempt to index global 'love'".
+  if not (love and love.xr) then return o end
   o.pipelines = o.pipelines or {}
   o.pipelines.voxel = 6        -- 1ST; see lib/VoxelState ANGLE_LABELS
   o.pipelines.tiltshift = 3
