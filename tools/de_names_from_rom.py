@@ -25,7 +25,10 @@ from pathlib import Path
 SPECIES = (0x1C21E, 10)     # fixed stride, 190 entries, indexed 1..190
 MOVES = 0xB0000             # 0x50-terminated, in index order
 ITEMS = 0x472D             # MEISTERBALL first; the US base is two bytes earlier
-TRAINERS = 0x27EC3    # TEENAGER..SIEGFRIED, 47 classes
+TRAINERS = 0x399FF    # TEENAGER..SIEGFRIED, 47 classes.
+#   NOT 0x27EC3, where the US table sits and where the German ROM also
+#   has the first five names: that copy runs out after MATROSE and the
+#   next read walks into whatever follows. Only this one holds all 47.
 
 # The character set. Letters and digits are positional; the rest is a lookup,
 # and the three umlauts are what makes this a German cartridge rather than an
@@ -35,7 +38,7 @@ CHARMAP = {0x7F: " ", 0x4E: "\n", 0xE0: "'", 0xE1: "PK", 0xE2: "MN", 0xE3: "-",
            0xF2: ".", 0xF3: "/", 0xF4: ",", 0x9A: "(", 0x9B: ")", 0x9C: ":",
            0x9D: ";", 0x9E: "[", 0x9F: "]", 0xBC: "\u00e9",
            0xC0: "\u00c4", 0xC1: "\u00d6", 0xC2: "\u00dc",
-           0xD0: "\u00e4", 0xD1: "\u00f6", 0xD2: "\u00fc"}
+           0xC3: "\u00e4", 0xC4: "\u00f6", 0xC5: "\u00fc", 0xBE: "\u00df"}
 for _i in range(26):
     CHARMAP[0x80 + _i] = chr(65 + _i)
     CHARMAP[0xA0 + _i] = chr(97 + _i)
@@ -141,13 +144,13 @@ def main():
         values = {key: table[i] for key, i in ids.items() if i in table}
         write_catalog(mod / "lang" / filename, title, values)
 
-    # TRAINERS ARE NOT DONE HERE, and the reason is worth writing down.
-    # lang/trainer_names.lua is keyed by class id in ALPHABETICAL order, and
-    # the cartridge lists its classes in battle order; matching one against
-    # the other by position turns a bug catcher into a mechanic. The table is
-    # at 0x27EC3 and reads cleanly -- what is missing is the id-to-index
-    # mapping this project does not store for trainers, the way it does for
-    # species, moves and items.
+    # Trainers join the others: data/generated/trainers.lua carries the same
+    # internal index, which is what the cartridge orders its class names by.
+    # The first attempt matched by POSITION against an alphabetical key list
+    # and turned a bug catcher into a mechanic.
+    write_catalog(mod / "lang" / "trainer_names.lua", "trainers",
+                  {key: trainers[i] for key, i in
+                   lua_table(data / "trainers.lua").items() if i in trainers})
 
 
 if __name__ == "__main__":
