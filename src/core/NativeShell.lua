@@ -488,6 +488,19 @@ local function applyCommand(cmd)
     return
   end
 
+  -- The window has taken the exported file and put a share sheet up. Clear
+  -- it, because this field is a ONE-SHOT and was not being treated as one:
+  -- it stayed in the snapshot for the rest of the run, and the window opens a
+  -- sheet whenever it sees the value appear. Coming back from the Crown
+  -- rebuilds the launcher, which reads the snapshot fresh -- so the sheet for
+  -- a file exported ten minutes earlier came up over the launcher every
+  -- single time immersion ended.
+  if cmd.action == "exportTaken" then
+    exportFile = nil
+    lastPublished = nil
+    return
+  end
+
   if cmd.action == "toLauncher" then
     -- SILENCE WHILE THE WORLD IS CLOSED.
     --
@@ -623,6 +636,7 @@ function NativeShell.update(dt)
   if cmd and not NativeShell.active then
     local allowed = cmd.action == "toLauncher" or cmd.action == "setOption"
                     or cmd.action == "setDebug" or cmd.action == "boot"
+                    or cmd.action == "exportTaken"
                     or (type(cmd.action) == "string" and cmd.action:sub(1, 3) == "ed.")
     if not allowed then cmd = nil end
   end

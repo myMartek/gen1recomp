@@ -59,6 +59,9 @@ struct GRLauncherView: View {
         .onChange(of: shell.exportFile) { _, file in
             guard let file, !file.isEmpty else { return }
             exportURL = URL(fileURLWithPath: file)
+            // Taken. Leaving it set means this sheet returns every time the
+            // launcher is rebuilt, and the Crown rebuilds it.
+            shell.exportTaken()
         }
         .sheet(item: Binding(
             get: { exportURL.map { GRExportItem(url: $0) } },

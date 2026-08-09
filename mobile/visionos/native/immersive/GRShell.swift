@@ -338,6 +338,15 @@ final class GRShell {
         send(["action": "editSlot", "version": version, "slot": slot])
     }
 
+    /// Acknowledges an export the window has presented. The field is a
+    /// one-shot; without this it stays in the snapshot and the sheet reopens
+    /// every time the launcher is rebuilt -- which is what leaving immersion
+    /// with the Crown does.
+    func exportTaken() {
+        exportFile = nil
+        send(["action": "exportTaken"])
+    }
+
     func newSlot(version: String) {
         send(["action": "newSlot", "version": version])
     }
