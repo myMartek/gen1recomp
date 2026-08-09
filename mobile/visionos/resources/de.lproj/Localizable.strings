@@ -142,3 +142,11 @@
 "section.saves" = "Spielstände";
 "action.save" = "Sichern";
 "Ereignisse" = "Ereignisse";
+
+/* --- Attacke wählen --- */
+"Change…" = "Ändern…";
+"moves.pick" = "Attacke wählen";
+"moves.learns" = "Lernt es selbst";
+"moves.all" = "Alle Attacken";
+"moves.atLevel" = "Lv%lld";
+"moves.byTM" = "TM/VM";

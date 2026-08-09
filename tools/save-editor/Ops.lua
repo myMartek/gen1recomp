@@ -296,6 +296,20 @@ function Ops.cycleMove(S, mon, slot)
   return Ops.mark(S, ("Move %d set to %s"):format(slot, nextId))
 end
 
+-- Set a slot to a NAMED move. cycleMove steps one position through the whole
+-- alphabetical list, which is the right control for a keyboard and the wrong
+-- one for a picker: from SCRATCH the next move is SCREECH, and reaching
+-- FLAMETHROWER that way is ninety presses. Both stay -- they are different
+-- gestures, not two versions of one.
+function Ops.setMove(S, mon, slot, id)
+  if not mon then return false end
+  if not (id and S.data.moves[id]) then
+    return Ops.say(S, ("No such move: %s"):format(tostring(id)))
+  end
+  MonOps.setMove(S.data, mon, slot, id)
+  return Ops.mark(S, ("Move %d set to %s"):format(slot, id))
+end
+
 function Ops.clearMove(S, mon, slot)
   if not (mon and mon.moves and mon.moves[slot]) then
     return Ops.say(S, ("Move slot %d is already empty"):format(slot))

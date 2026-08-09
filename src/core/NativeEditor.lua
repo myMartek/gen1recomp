@@ -150,6 +150,27 @@ local function page(ids, query)
   return hits, total
 end
 
+-- What the inspected mon can learn ON ITS OWN, in the order it learns them:
+-- its two starting moves, then the level-up list, then the TMs and HMs it is
+-- compatible with. The picker offers these first and the whole move list
+-- second, because "what does this species actually get" is the question being
+-- asked nine times out of ten.
+local function learnableSection(S)
+  local mon = S.editingMon
+  local def = mon and (S.data and S.data.pokemon or {})[mon.species]
+  if not def then return nil end
+  local rows, seen = {}, {}
+  local function add(id, level, tm)
+    if not id or seen[id] then return end
+    seen[id] = true
+    rows[#rows + 1] = { id = id, level = level or 0, tm = tm or false }
+  end
+  for _, id in ipairs(def.level1Moves or {}) do add(id, 1, false) end
+  for _, entry in ipairs(def.learnset or {}) do add(entry.move, entry.level, false) end
+  for _, id in ipairs(def.tmhm or {}) do add(id, 0, true) end
+  return rows
+end
+
 local function partySection(S)
   local mons = {}
   for i, mon in ipairs(S.save.party or {}) do
@@ -286,7 +307,10 @@ local function snapshot()
       -- paging it would have made a search miss what fell off the end. 151
       -- names and numbers is a few kilobytes.
       speciesCatalog = list(speciesRows(S)),
-      moveCatalog = list((page(S.cat.moves, view.itemQuery))),
+      -- Whole and unfiltered, like the species list and for the same reason:
+      -- the sheet that shows it has its own search field.
+      moveCatalog = list(S.cat.moves),
+      learnable = list(learnableSection(S)),
       map = mapSection(S),
       queries = { item = view.itemQuery, event = view.eventQuery, map = view.mapQuery },
       page = view.page,
@@ -353,6 +377,7 @@ local VERBS = {
   stepSpecies = function(S, c) Ops.stepSpecies(S, S.editingMon, num(c.delta, 0)) end,
   setDv       = function(S, c) Ops.setDv(S, S.editingMon, str(c.key), num(c.value, 0)) end,
   cycleMove   = function(S, c) Ops.cycleMove(S, S.editingMon, num(c.slot, 1)) end,
+  setMove     = function(S, c) Ops.setMove(S, S.editingMon, num(c.slot, 1), str(c.id)) end,
   clearMove   = function(S, c) Ops.clearMove(S, S.editingMon, num(c.slot, 1)) end,
   resetMoves  = function(S) Ops.resetMoves(S, S.editingMon) end,
   healMon     = function(S) Ops.healMon(S, S.editingMon) end,

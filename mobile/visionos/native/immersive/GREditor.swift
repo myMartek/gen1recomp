@@ -55,6 +55,14 @@ struct GRSpecies: Decodable, Hashable, Identifiable {
     var label: String { dex > 0 ? String(format: "#%03d  %@", dex, id) : id }
 }
 
+/// A move the inspected species gets by itself: `level` is the level it comes
+/// at (1 for a starting move), or 0 when it arrives by TM or HM instead.
+struct GRLearnable: Decodable, Hashable, Identifiable {
+    let id: String
+    let level: Int
+    let tm: Bool
+}
+
 struct GRItemRow: Decodable, Hashable, Identifiable {
     let id: String
     let count: Int
@@ -137,6 +145,7 @@ struct GREditorState: Decodable {
     let itemCatalog: [String]?
     let speciesCatalog: [GRSpecies]?
     let moveCatalog: [String]?
+    let learnable: [GRLearnable]?
     let map: GRMapState
     let page: Int
 }
@@ -219,6 +228,7 @@ final class GREditor {
     func stepSpecies(_ d: Int)           { send("stepSpecies", ["delta": d]) }
     func setDv(_ key: String, _ v: Int)  { send("setDv", ["key": key, "value": v]) }
     func cycleMove(_ slot: Int)          { send("cycleMove", ["slot": slot]) }
+    func setMove(_ slot: Int, _ id: String) { send("setMove", ["slot": slot, "id": id]) }
     func clearMove(_ slot: Int)          { send("clearMove", ["slot": slot]) }
     func resetMoves()                    { send("resetMoves") }
     func healMon()                       { send("healMon") }

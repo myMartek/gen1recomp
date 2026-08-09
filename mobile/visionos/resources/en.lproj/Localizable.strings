@@ -143,3 +143,11 @@
    editor (write the file). One key for both put the wrong word in German. */
 "section.saves" = "Save";
 "action.save" = "Save";
+
+/* --- picking a move --- */
+"Change…" = "Change…";
+"moves.pick" = "Pick a move";
+"moves.learns" = "Learns by itself";
+"moves.all" = "Every move";
+"moves.atLevel" = "Lv%lld";
+"moves.byTM" = "TM/HM";

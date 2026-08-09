@@ -151,6 +151,8 @@ private struct PartyTab: View {
     let editor: GREditor
     let s: GREditorState
     @State private var picking = false
+    /// Which move slot the picker is open for, if any.
+    @State private var pickingMove: Int?
 
     private var mons: [GRMon] { s.party ?? [] }
     private var selected: GRMon? { mons.first { $0.index == s.selectedParty } }
@@ -221,13 +223,26 @@ private struct PartyTab: View {
                         Text(move.id.isEmpty ? "—" : move.id).font(.body.monospaced())
                         Spacer()
                         Text("PP \(move.pp)").foregroundStyle(.secondary)
-                        Button("Cycle") { editor.cycleMove(move.slot) }
-                        Button("Clear") { editor.clearMove(move.slot) }
+                        // Choose, rather than step. Cycle walked one position
+                        // through the whole alphabetical list, which from
+                        // SCRATCH lands on SCREECH and reaches FLAMETHROWER
+                        // in about ninety presses -- it reads as random
+                        // because at that length it may as well be.
+                        Button(trKey("Change…")) { pickingMove = move.slot }
+                        Button(trKey("Clear")) { editor.clearMove(move.slot) }
                     }
                 }
                 HStack {
-                    Button("Reset moves") { editor.resetMoves() }
-                    Button("Heal") { editor.healMon() }
+                    Button(trKey("Reset moves")) { editor.resetMoves() }
+                    Button(trKey("Heal")) { editor.healMon() }
+                }
+                .sheet(isPresented: Binding(get: { pickingMove != nil },
+                                            set: { if !$0 { pickingMove = nil } })) {
+                    GRMovePicker(learnable: s.learnable ?? [],
+                                 all: s.moveCatalog ?? []) { id in
+                        if let slot = pickingMove { editor.setMove(slot, id) }
+                        pickingMove = nil
+                    }
                 }
             }
         }
@@ -553,6 +568,75 @@ private struct GRSpeciesPicker: View {
             }
             .searchable(text: $query)
             .navigationTitle(trKey("Pick species…"))
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(trKey("Cancel")) { dismiss() }
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 520)
+    }
+}
+
+
+// MARK: - Picking a move
+
+/// Two lists in one sheet: what this species learns by itself, and everything
+/// else. The first is what is being asked for nine times out of ten -- a
+/// Charmander's own Flamethrower rather than any of the hundred and sixty-odd
+/// moves in the game -- so it comes first and is not hidden behind a search.
+private struct GRMovePicker: View {
+    let learnable: [GRLearnable]
+    let all: [String]
+    let choose: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var matchingLearnable: [GRLearnable] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { return learnable }
+        return learnable.filter { $0.id.localizedCaseInsensitiveContains(q) }
+    }
+
+    private var matchingAll: [String] {
+        let own = Set(learnable.map(\.id))
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return all.filter { !own.contains($0)
+            && (q.isEmpty || $0.localizedCaseInsensitiveContains(q)) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !matchingLearnable.isEmpty {
+                    Section(trKey("moves.learns")) {
+                        ForEach(matchingLearnable) { m in
+                            Button { choose(m.id) } label: {
+                                HStack {
+                                    Text(m.id)
+                                    Spacer()
+                                    Text(m.tm ? tr("moves.byTM") : tr("moves.atLevel", m.level))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Section(trKey("moves.all")) {
+                    ForEach(matchingAll, id: \.self) { id in
+                        Button { choose(id) } label: {
+                            HStack { Text(id); Spacer() }.contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .searchable(text: $query)
+            .navigationTitle(trKey("moves.pick"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(trKey("Cancel")) { dismiss() }
