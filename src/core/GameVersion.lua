@@ -48,6 +48,25 @@ GameVersion.VERSIONS = {
   },
 }
 
+-- The review cartridge: a file that is nothing but its own identity.
+--
+-- The app ships no game data and may not, which leaves anyone without a
+-- cartridge -- an App Store reviewer above all -- looking at a launcher with
+-- nothing behind it. This hash belongs to a file the app's author distributes
+-- (bin/make-demo-rom.py in the wrapper repository, published at
+-- https://www.martek.de/downloads/demo.gb). Importing it does not decode
+-- anything: it switches on the demo world in src/demo/, and it counts for Red,
+-- Blue and Yellow alike, because which of the three it stands in for is a
+-- question with no answer.
+--
+-- Pinned, so the generator is not free to drift: change one byte over there
+-- and this line has to change with it or the file stops being recognised.
+GameVersion.DEMO_SHA1 = "4f10c2543ffa8cbf19b34dbef958eeae9701c7db"
+
+function GameVersion.isDemoSha1(sha1)
+  return sha1 == GameVersion.DEMO_SHA1
+end
+
 -- Launcher column order.
 GameVersion.ORDER = { "red", "blue", "yellow" }
 

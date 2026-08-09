@@ -38,6 +38,34 @@ local MARKER_PATH = "rom-cache.complete"
 local function markerFor(version)
   return CACHE_FORMAT .. GameVersion.info(version).sha1
 end
+
+-- The demo's own marker, kept apart from the cache marker above rather than
+-- folded into it. A demo version has NO cache -- no data/generated, no
+-- assets/generated, nothing that allRequiredFilesExist would find -- so
+-- claiming the cache marker would make isReady lie about a tree that is not
+-- there, and the first read of it would fail somewhere far from here.
+local DEMO_MARKER_PATH = "demo.complete"
+local DEMO_MARKER = "demo-v1:" .. GameVersion.DEMO_SHA1
+
+-- Turn the demo on, for every version at once.
+--
+-- All three, because the file stands in for a cartridge and does not claim to
+-- be any particular one: whichever game the player picks afterwards, the demo
+-- is what there is. A real import later overwrites its own version's marker
+-- and RomImporter.isReady starts preferring the cache, so importing Red for
+-- real leaves Blue and Yellow on the demo rather than breaking them.
+local function installDemo()
+  local CacheFs = require("src.import.CacheFs")
+  local saved = CacheFs.prefix
+  local failure
+  for _, id in ipairs(GameVersion.ORDER) do
+    CacheFs.prefix = GameVersion.cachePrefix(id)
+    local ok, writeError = CacheFs.write(DEMO_MARKER_PATH, DEMO_MARKER)
+    if not ok then failure = failure or writeError end
+  end
+  CacheFs.prefix = saved
+  return failure == nil, failure
+end
 local COMMUNITY_URL = "https://bois.icu"
 local TRUST_WARNING = "if you did not get this from bryanthaboi's github " ..
   "or a link from the discord that bryanthaboi himself posted, just know " ..
@@ -220,8 +248,8 @@ local function purgeSaveDirCache()
   end
 end
 
--- Whether a given game version's ROM has already been imported and cached.
-function RomImporter.isReady(version)
+-- Whether this version has a decoded cartridge behind it.
+local function cartridgeReady(version)
   version = version or "red"
   local CacheFs = require("src.import.CacheFs")
   if CacheFs.root() then
@@ -239,6 +267,29 @@ function RomImporter.isReady(version)
   local marker = CacheFs.read(MARKER_PATH)
   CacheFs.prefix = saved
   return marker == markerFor(version) and allRequiredFilesExist(version)
+end
+
+-- Whether this version is standing in for a cartridge that was never
+-- imported -- the review file's doing (installDemo below).
+--
+-- False the moment a real cartridge is decoded for this version, so importing
+-- Red for real takes Red off the demo and leaves Blue and Yellow on it. Read
+-- from disk each time, like isReady, because the shell asks about all three
+-- versions from outside any of them.
+function RomImporter.isDemo(version)
+  local CacheFs = require("src.import.CacheFs")
+  local saved = CacheFs.prefix
+  CacheFs.prefix = GameVersion.cachePrefix(version or "red")
+  local marker = CacheFs.read(DEMO_MARKER_PATH)
+  CacheFs.prefix = saved
+  if marker ~= DEMO_MARKER then return false end
+  return not cartridgeReady(version)
+end
+
+-- Whether a given game version has something to play: a cartridge, or the
+-- demo standing in for one.
+function RomImporter.isReady(version)
+  return cartridgeReady(version) or RomImporter.isDemo(version)
 end
 
 -- Load the import manifest for a version and confirm it matches that ROM.
@@ -363,7 +414,11 @@ local function findPendingRom(ready)
     if name:lower():match("%.gbc?$") and love.filesystem.getInfo(name, "file") then
       local data = love.filesystem.read(name)
       if type(data) == "string" and #data == 1024 * 1024 then
-        local version = GameVersion.forSha1(sha1(data))
+        local hash = sha1(data)
+        -- The review file belongs to no version and therefore has no entry in
+        -- `ready` to be skipped by. It is always offered; startData decides.
+        if GameVersion.isDemoSha1(hash) then return name, data end
+        local version = GameVersion.forSha1(hash)
         if version and not ready[version] then
           return name, data
         end
@@ -371,6 +426,20 @@ local function findPendingRom(ready)
     end
   end
   return nil
+end
+
+-- Is there a file in the save directory that nothing has imported yet?
+--
+-- The visionOS window copies a pick in as picked_rom.gb and then has nobody to
+-- decode it: that platform hands the launcher to the native shell and never
+-- constructs an importer at all (main.lua). This is what lets it construct one
+-- exactly when there is something to do, and skip it otherwise -- an importer
+-- built for nothing would sit there owning the frame with its own launcher
+-- drawn into a surface the shell is not showing.
+function RomImporter.hasPendingRom()
+  local ready = {}
+  for _, id in ipairs(GameVersion.ORDER) do ready[id] = cartridgeReady(id) end
+  return findPendingRom(ready) ~= nil
 end
 
 -- GameActivity always writes the SAF pick to picked_rom.gb, so a leftover
@@ -860,6 +929,48 @@ local function resetPointerCursor(self)
   love.mouse.setCursor(self.arrowCursor)
 end
 
+-- The review file, which is decoded by not decoding it.
+--
+-- There is nothing in it to extract -- see GameVersion.DEMO_SHA1 -- so this
+-- does what an import does around the extraction and nothing in the middle:
+-- write the markers, report ready, hand over. Instant, so it needs none of the
+-- worker coroutine's progress machinery.
+function RomImporter:acceptDemo(displayName)
+  local ok, writeError = installDemo()
+  if not ok then
+    self:setError("Could not switch the demo on: " .. tostring(writeError))
+    return
+  end
+
+  -- Consumed. Left in place it would be found again on every launch, and the
+  -- app would re-run this instead of going straight to the launcher.
+  if type(displayName) == "string" and not displayName:find("[/\\]") then
+    love.filesystem.remove(displayName)
+  end
+
+  for _, id in ipairs(GameVersion.ORDER) do
+    self.ready[id] = true
+    self.returning[id] = false
+  end
+
+  local version = GameVersion.VERSIONS[self.tab] and self.tab or GameVersion.get()
+  self.romData = nil
+  self.importing = nil
+  self.workState = "complete"
+  self.completeVersion = version
+  self.status = "Demo ready"
+  self.detail = "No cartridge needed"
+  self.progress = 1
+  if self.launcher then
+    -- Stay on the launcher; the player presses Play, exactly as after a real
+    -- import.
+    return
+  end
+  self._handedOff = true
+  resetPointerCursor(self)
+  if self.onComplete then self.onComplete(version) end
+end
+
 -- Verify + extract a ROM.  The version is decided by the ROM's own SHA-1, so
 -- dropping a Red, Blue, or Yellow cart into any column always lands in the
 -- right one.
@@ -875,6 +986,10 @@ function RomImporter:startData(data, displayName)
     return
   end
   local actualHash = sha1(data)
+  if GameVersion.isDemoSha1(actualHash) then
+    self:acceptDemo(displayName)
+    return
+  end
   local version = GameVersion.forSha1(actualHash)
   if not version then
     self:setError(("Unsupported ROM (SHA-1 %s). This needs a clean US Pokemon "

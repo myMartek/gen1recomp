@@ -14,6 +14,9 @@ local editorMode = os.getenv("POKEPORT_EDITOR") == "1" or POKEPORT_EDITOR_MODE =
 -- Lua one there and is inert everywhere else (NativeShell.applies()).
 local NativeShell = require("src.core.NativeShell")
 local Game, EditorApp, Importer, TouchEditor
+-- The demo world, when a version is standing on the review file instead of a
+-- cartridge. Mutually exclusive with Game: one of the two owns the frame.
+local Demo
 
 local autopilot -- optional scripted-input dev tool (tests/autopilot.lua)
 local driverCo  -- optional frame-driver (POKEPORT_DRIVER=file.lua): a
@@ -175,6 +178,19 @@ local function bootGame(version)
   -- data, so data/generated + assets/generated resolve to that version's files.
   local GameVersion = require("src.core.GameVersion")
   GameVersion.set(version or os.getenv("POKEPORT_VERSION") or "red")
+
+  -- Nothing was imported: this version is on the review file, and what plays
+  -- is the app's own demo world rather than the game. Before mountVersion,
+  -- because there is no cache to mount and nothing here reads generated data.
+  if require("src.import.RomImporter").isDemo(GameVersion.get()) then
+    Demo = require("src.demo.DemoWorld")
+    Demo:load()
+    return
+  end
+  -- A cartridge was imported after the demo: the demo has to let go of the
+  -- frame, or update and draw keep reaching it instead of the game.
+  Demo = nil
+
   require("src.import.CacheFs").mountVersion(GameVersion.get())
   if love.window and love.window.setTitle then
     local Version = require("src.core.Version")
@@ -276,9 +292,31 @@ function love.load(args)
   -- focus and read aloud.  src/core/NativeShell.lua publishes what the shell
   -- needs and boots what it picks -- it does not reimplement any of it.
   if NativeShell.applies() then
-    NativeShell.begin(bootGame, function(v, slot)
-      openEditor(v, slot, true)
-    end)
+    local function handToShell()
+      NativeShell.begin(bootGame, function(v, slot)
+        openEditor(v, slot, true)
+      end)
+    end
+
+    -- A file the window copied in has nobody else to decode it.
+    --
+    -- GRRomImport writes the player's pick to picked_rom.gb and says "restart
+    -- to decode it" -- and on restart this branch used to hand straight to the
+    -- shell, which only ever READS readiness. So the file sat there. An
+    -- importer is built here when, and only when, there is something waiting;
+    -- it owns the frame until it is done and then the shell takes over.
+    --
+    -- This is also the reviewer's path: the demo file arrives the same way and
+    -- is finished before the first frame is drawn (RomImporter:acceptDemo).
+    if RomImporter.hasPendingRom() then
+      Importer = RomImporter.new(function()
+        Importer = nil
+        handToShell()
+      end)
+      return
+    end
+
+    handToShell()
     return
   end
 
@@ -374,6 +412,8 @@ function love.update(dt)
     if NativeShell.active then return end
   end
 
+  if Demo then return Demo:update(dt) end
+
   -- Scripted runs (autopilot / POKEPORT_DRIVER) observe and act exactly
   -- once per Game:update, so they must keep a 1:1 relationship with the
   -- logic step.  Fast-forwarding them by scaling the step inside
@@ -422,6 +462,8 @@ function love.draw()
   -- Game, LOVE catches the error and stops the loop -- so love.update never
   -- runs again either, and the launcher looks alive while answering nothing.
   if NativeShell.active then return NativeShell.draw() end
+
+  if Demo then return Demo:draw() end
 
   -- Game is nil until a ROM has been booted. On visionOS that window is
   -- real: the launcher is the app's front end, and the system delivers
