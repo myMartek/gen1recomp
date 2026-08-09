@@ -180,17 +180,26 @@ local function partySection(S)
 end
 
 local function bagSection(S)
+  -- THROUGH Bag.order, not S.save.bagOrder. The accessor is what normalises
+  -- that list -- it drops ids the inventory no longer has, drops duplicates,
+  -- and appends anything written straight into the inventory -- and reading
+  -- the raw field meant reading it mid-repair.
+  local Bag = require("src.inventory.Bag")
   local rows = {}
-  for _, id in ipairs(S.save.bagOrder or {}) do
+  local ok, order = pcall(Bag.order, S.save)
+  if not ok then order = S.save.bagOrder or {} end
+  for _, id in ipairs(order) do
     local n = (S.save.inventory or {})[id]
     if n then rows[#rows + 1] = { id = id, count = n } end
   end
-  -- Anything the order list has not caught up with still has to be editable,
-  -- or an item added by a mod is invisible and undeletable.
+  -- Badges live in the inventory too and have their own section; listing them
+  -- here as items with a count of 1 is not what a bag is.
   for id, n in pairs(S.save.inventory or {}) do
-    local seen = false
-    for _, r in ipairs(rows) do if r.id == id then seen = true end end
-    if not seen then rows[#rows + 1] = { id = id, count = n } end
+    if not Ops.isBadgeId(id) then
+      local seen = false
+      for _, r in ipairs(rows) do if r.id == id then seen = true end end
+      if not seen then rows[#rows + 1] = { id = id, count = n } end
+    end
   end
   return rows
 end

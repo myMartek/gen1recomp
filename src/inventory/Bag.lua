@@ -82,7 +82,13 @@ function Bag.add(save, id, qty, data)
   local isNew = not inv[id]
   inv[id] = (inv[id] or 0) + (qty or 1)
   if isNew and not isBadge(id) then
-    table.insert(Bag.order(save), id)
+    -- Bag.order APPENDS IT ITSELF. Its repair pass adds anything the
+    -- inventory has and the order list does not, and the line above has just
+    -- put this id in the inventory -- so inserting after calling it added the
+    -- id twice. The next Bag.order dropped the duplicate again, which is why
+    -- the game never showed one and anything reading save.bagOrder directly
+    -- did.
+    Bag.order(save)
   end
   return true
 end
