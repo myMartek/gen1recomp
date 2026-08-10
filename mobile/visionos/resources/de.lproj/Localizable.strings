@@ -155,3 +155,54 @@
 "Language" = "Sprache";
 "English" = "Englisch";
 "Deutsch" = "Deutsch";
+
+/* --- Language switch --- */
+"Change the language?" = "Sprache wechseln?";
+"End the game and switch" = "Spiel beenden und wechseln";
+"Keep playing" = "Weiterspielen";
+"The language is part of a mod, and mods are loaded when the game starts. The running game has to end for the change to take effect. Nothing is saved automatically -- save first if you want to keep your progress." = "Die Sprache steckt in einer Mod, und Mods werden beim Start des Spiels geladen. Damit die Änderung greift, muss das laufende Spiel beendet werden. Es wird nichts automatisch gespeichert -- speichere vorher, wenn du deinen Fortschritt behalten willst.";
+
+/* --- Controls help --- */
+"help.title" = "Steuerung";
+"Done" = "Fertig";
+"help.tab.hands" = "Hände";
+"help.tab.controller" = "Controller";
+"help.intro.hands" = "Ganz ohne Controller. Jede Geste wird mit einer Hand gemacht und nur gehalten, solange sie wirkt — loslassen, und die Welt steht still.";
+"help.intro.controller" = "Ein verbundener Controller übernimmt, sobald du ihn benutzt. Legst du ihn weg, arbeiten die Hände ein paar Sekunden später wieder.";
+"help.group.moving" = "Gehen und umsehen";
+"help.group.buttons" = "Tasten";
+"help.group.table" = "Die Welt auf dem Tisch";
+"help.hand.leftThumb" = "Linke Hand, Daumen hoch";
+"help.hand.rightThumb" = "Rechte Hand, Daumen hoch";
+"help.hand.leftThumbMenu" = "Linke Hand, Daumen hoch";
+"help.hand.rightIndex" = "Rechte Hand, Daumen an Zeigefinger";
+"help.hand.rightMiddle" = "Rechte Hand, Daumen an Mittelfinger";
+"help.hand.rightRing" = "Rechte Hand, Daumen an Ringfinger";
+"help.hand.leftRing" = "Linke Hand, Daumen an Ringfinger";
+"help.hand.middlePinch" = "Eine Hand, Daumen an Mittelfinger";
+"help.hand.bothMiddle" = "Beide Hände, Daumen an Mittelfinger";
+"help.pad.leftStick" = "Linker Stick";
+"help.pad.rightStickX" = "Rechter Stick, links und rechts";
+"help.pad.rightStickY" = "Rechter Stick, hoch und runter";
+"help.pad.ab" = "A und B";
+"help.pad.trigger" = "Ein Trigger";
+"help.pad.select" = "SELECT";
+"help.pad.stickClick" = "Linken Stick drücken";
+"help.pad.grip" = "Grifftaste halten und die Hand bewegen";
+"help.action.walk" = "Gehen";
+"help.action.turn" = "Blickrichtung drehen";
+"help.action.cursor" = "Auswahl bewegen";
+"help.action.a" = "A";
+"help.action.b" = "B";
+"help.action.ab" = "A und B";
+"help.action.start" = "START — öffnet das Pausenmenü";
+"help.action.select" = "SELECT";
+"help.action.view" = "Kamerawinkel wechseln";
+"help.action.zoom" = "Modell vergrößern und verkleinern";
+"help.action.dragTable" = "Die Welt greifen und verschieben";
+"help.action.turnScale" = "Die Welt drehen und in der Größe ändern";
+"help.note.tilt" = "Daumen hoch halten und die Hand in die Richtung kippen, in die du willst. Weiter gekippt heißt schneller.";
+"help.note.step" = "Ein Schritt von 45 Grad pro Kippen. Zurück in die Mitte, dann geht der nächste.";
+"help.note.menuOnly" = "Solange ein Menü, ein Dialog oder ein Kampf auf dem Gerät in deiner Hand steht.";
+"help.note.dioramaOnly" = "Nur wenn die Welt als Modell vor dir steht.";
+"help.note.firstPersonOnly" = "Nur wenn du selbst in der Welt stehst.";

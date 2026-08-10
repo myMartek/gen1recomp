@@ -156,3 +156,54 @@
 "Language" = "Language";
 "English" = "English";
 "Deutsch" = "Deutsch";
+
+/* --- Language switch --- */
+"Change the language?" = "Change the language?";
+"End the game and switch" = "End the game and switch";
+"Keep playing" = "Keep playing";
+"The language is part of a mod, and mods are loaded when the game starts. The running game has to end for the change to take effect. Nothing is saved automatically -- save first if you want to keep your progress." = "The language is part of a mod, and mods are loaded when the game starts. The running game has to end for the change to take effect. Nothing is saved automatically -- save first if you want to keep your progress.";
+
+/* --- Controls help --- */
+"help.title" = "Controls";
+"Done" = "Done";
+"help.tab.hands" = "Hands";
+"help.tab.controller" = "Controller";
+"help.intro.hands" = "No controller needed. Every gesture is made with one hand and held only while it is being used; let it go and the world stops moving.";
+"help.intro.controller" = "A connected controller takes over as soon as it is used. Put it down and your hands work again a couple of seconds later.";
+"help.group.moving" = "Moving and looking";
+"help.group.buttons" = "Buttons";
+"help.group.table" = "The world on the table";
+"help.hand.leftThumb" = "Left hand, thumbs-up";
+"help.hand.rightThumb" = "Right hand, thumbs-up";
+"help.hand.leftThumbMenu" = "Left hand, thumbs-up";
+"help.hand.rightIndex" = "Right hand, thumb to index finger";
+"help.hand.rightMiddle" = "Right hand, thumb to middle finger";
+"help.hand.rightRing" = "Right hand, thumb to ring finger";
+"help.hand.leftRing" = "Left hand, thumb to ring finger";
+"help.hand.middlePinch" = "Either hand, thumb to middle finger";
+"help.hand.bothMiddle" = "Both hands, thumb to middle finger";
+"help.pad.leftStick" = "Left stick";
+"help.pad.rightStickX" = "Right stick, left and right";
+"help.pad.rightStickY" = "Right stick, up and down";
+"help.pad.ab" = "A and B";
+"help.pad.trigger" = "Either trigger";
+"help.pad.select" = "SELECT";
+"help.pad.stickClick" = "Click the left stick";
+"help.pad.grip" = "Hold a grip and move that hand";
+"help.action.walk" = "Walk";
+"help.action.turn" = "Turn your view";
+"help.action.cursor" = "Move the cursor";
+"help.action.a" = "A";
+"help.action.b" = "B";
+"help.action.ab" = "A and B";
+"help.action.start" = "START — opens the pause menu";
+"help.action.select" = "SELECT";
+"help.action.view" = "Switch the camera angle";
+"help.action.zoom" = "Zoom the model";
+"help.action.dragTable" = "Take hold of the world and move it";
+"help.action.turnScale" = "Turn and resize the world";
+"help.note.tilt" = "Hold the thumbs-up and tip your hand the way you want to go. Further is faster.";
+"help.note.step" = "One step of 45 degrees per tilt. Come back to the middle for the next one.";
+"help.note.menuOnly" = "While a menu, a dialogue or a fight is showing on the device in your hand.";
+"help.note.dioramaOnly" = "Only where the world sits on a table in front of you.";
+"help.note.firstPersonOnly" = "Only when you are standing in the world.";
