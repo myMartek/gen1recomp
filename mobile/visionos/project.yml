@@ -260,30 +260,93 @@ targets:
       - name: Embed and sign openal-soft
         basedOnDependencyAnalysis: false
         script: |
-          # openal-soft is a dynamic library on purpose (LGPL-2.1 section 6:
-          # the user has to be able to swap it), but it lives in an xcframework
-          # as a bare .dylib, which Xcode will not embed on its own. Copy the
-          # slice matching the SDK being built and re-sign it with the app's
-          # identity.
+          # openal-soft is a dynamic library on purpose -- LGPL-2.1 section 6
+          # asks that the user be able to swap it -- and it is embedded as a
+          # FRAMEWORK, not as the bare .dylib it arrives as.
+          #
+          # Not a nicety. A standalone dylib is rejected outright by App Store
+          # Connect, and the message names something else entirely:
+          #
+          #   ITMS-90426: Invalid Swift Support -- The SwiftSupport folder is
+          #   missing. Rebuild your app using the current public (GM) version
+          #   of Xcode and resubmit it.
+          #
+          # Nothing to do with Swift, and no version of Xcode fixes it. Apple's
+          # own answer (developer.apple.com/forums/thread/765288): iOS -- and
+          # visionOS with it -- supports third-party frameworks and does not
+          # support third-party standalone dynamic libraries, "the only
+          # exception being the Swift system libraries provided by Xcode". The
+          # checker sees a lone dylib in the bundle, concludes it can only be
+          # one of those, and reports the folder that would have accompanied it
+          # as missing.
+          #
+          # The other half of this lives in deps/build_deps.sh, which gives the
+          # library the install_name @rpath/openal.framework/openal before
+          # anything links against it. It has to be right by then: the linker
+          # copies that name into the app, and correcting it here afterwards
+          # would mean rewriting a binary Xcode has already signed on an
+          # incremental build -- which produces an app that will not launch.
           set -euo pipefail
           case "$PLATFORM_NAME" in
-            xrsimulator) SLICE=xros-arm64-simulator ;;
-            *)           SLICE=xros-arm64 ;;
+            xrsimulator) SLICE=xros-arm64-simulator; PLATFORMS=XRSimulator ;;
+            *)           SLICE=xros-arm64;           PLATFORMS=XROS ;;
           esac
           SRC="$SRCROOT/deps/openal.xcframework/$SLICE"
-          DST="$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
           LIB="$(/bin/ls "$SRC"/libopenal.*.dylib 2>/dev/null | head -1)"
           if [ -z "$LIB" ]; then
             echo "error: no libopenal dylib in $SRC" >&2; exit 1
           fi
+
+          DST="$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
+          FW="$DST/openal.framework"
           mkdir -p "$DST"
-          # The install_name is @rpath/libopenal.1.dylib, so the copy has to
-          # carry exactly that name regardless of the versioned source file.
-          cp -f "$LIB" "$DST/libopenal.1.dylib"
+
+          # ONLY WHEN SOMETHING CHANGED. This phase runs on every build (it has
+          # to: the framework is not a build product Xcode tracks), and rewriting
+          # a file the app's signature already seals leaves the bundle reported
+          # as "a sealed resource is missing or invalid" -- on an incremental
+          # build Xcode sees the app as up to date and never re-signs it. The
+          # stamp lives outside the bundle so nothing unexpected is sealed.
+          STAMP="${DERIVED_FILE_DIR:-$TARGET_TEMP_DIR}/openal-embed.stamp"
+          WANT="$(/usr/bin/stat -f '%m %z' "$LIB") $PLATFORMS"
+          if [ -f "$FW/openal" ] && [ "$(cat "$STAMP" 2>/dev/null || true)" = "$WANT" ]; then
+            exit 0
+          fi
+          # A bare copy from an older build of this same app would be shipped
+          # alongside the framework and rejected on its own.
+          rm -f "$DST"/libopenal.*.dylib
+          rm -rf "$FW"
+          mkdir -p "$FW"
+          cp -f "$LIB" "$FW/openal"
+
+          cat > "$FW/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
+            <key>CFBundleExecutable</key><string>openal</string>
+            <key>CFBundleIdentifier</key><string>${PRODUCT_BUNDLE_IDENTIFIER}.openal</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>openal</string>
+            <key>CFBundlePackageType</key><string>FMWK</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>MinimumOSVersion</key><string>${XROS_DEPLOYMENT_TARGET}</string>
+            <key>CFBundleSupportedPlatforms</key><array><string>${PLATFORMS}</string></array>
+          </dict>
+          </plist>
+          PLIST
+
+          # The bundle, not just the binary inside it: an embedded framework is
+          # sealed as a whole and the app's own signature covers that seal.
           if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ]; then
             codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
-              ${OTHER_CODE_SIGN_FLAGS:-} "$DST/libopenal.1.dylib"
+              ${OTHER_CODE_SIGN_FLAGS:-} "$FW"
           fi
+
+          mkdir -p "$(dirname "$STAMP")"
+          printf '%s' "$WANT" > "$STAMP"
 
   # ------------------------------------------------- immersive shell
   # The SwiftUI shell that owns @main for the VR presentation: a launcher
@@ -389,21 +452,64 @@ targets:
       - name: Embed and sign openal-soft
         basedOnDependencyAnalysis: false
         script: |
+          # A framework, not a bare dylib -- App Store Connect rejects the
+          # second one and blames Swift for it. The reasoning is written out on
+          # the flat target's copy of this script.
           set -euo pipefail
           case "$PLATFORM_NAME" in
-            xrsimulator) SLICE=xros-arm64-simulator ;;
-            *)           SLICE=xros-arm64 ;;
+            xrsimulator) SLICE=xros-arm64-simulator; PLATFORMS=XRSimulator ;;
+            *)           SLICE=xros-arm64;           PLATFORMS=XROS ;;
           esac
           SRC="$SRCROOT/deps/openal.xcframework/$SLICE"
-          DST="$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
           LIB="$(/bin/ls "$SRC"/libopenal.*.dylib 2>/dev/null | head -1)"
           if [ -z "$LIB" ]; then echo "error: no libopenal dylib in $SRC" >&2; exit 1; fi
+
+          DST="$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH"
+          FW="$DST/openal.framework"
           mkdir -p "$DST"
-          cp -f "$LIB" "$DST/libopenal.1.dylib"
+
+          # ONLY WHEN SOMETHING CHANGED. This phase runs on every build (it has
+          # to: the framework is not a build product Xcode tracks), and rewriting
+          # a file the app's signature already seals leaves the bundle reported
+          # as "a sealed resource is missing or invalid" -- on an incremental
+          # build Xcode sees the app as up to date and never re-signs it. The
+          # stamp lives outside the bundle so nothing unexpected is sealed.
+          STAMP="${DERIVED_FILE_DIR:-$TARGET_TEMP_DIR}/openal-embed.stamp"
+          WANT="$(/usr/bin/stat -f '%m %z' "$LIB") $PLATFORMS"
+          if [ -f "$FW/openal" ] && [ "$(cat "$STAMP" 2>/dev/null || true)" = "$WANT" ]; then
+            exit 0
+          fi
+          rm -f "$DST"/libopenal.*.dylib
+          rm -rf "$FW"
+          mkdir -p "$FW"
+          cp -f "$LIB" "$FW/openal"
+
+          cat > "$FW/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
+            <key>CFBundleExecutable</key><string>openal</string>
+            <key>CFBundleIdentifier</key><string>${PRODUCT_BUNDLE_IDENTIFIER}.openal</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>openal</string>
+            <key>CFBundlePackageType</key><string>FMWK</string>
+            <key>CFBundleShortVersionString</key><string>1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>MinimumOSVersion</key><string>${XROS_DEPLOYMENT_TARGET}</string>
+            <key>CFBundleSupportedPlatforms</key><array><string>${PLATFORMS}</string></array>
+          </dict>
+          </plist>
+          PLIST
+
           if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ]; then
             codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" \
-              ${OTHER_CODE_SIGN_FLAGS:-} "$DST/libopenal.1.dylib"
+              ${OTHER_CODE_SIGN_FLAGS:-} "$FW"
           fi
+
+          mkdir -p "$(dirname "$STAMP")"
+          printf '%s' "$WANT" > "$STAMP"
 
 schemes:
   gen1recomp:

@@ -327,6 +327,19 @@ cmake_dep() {
     assert_platform "$lib" \
       "$([ "$sdk" = xros ] && echo VISIONOS || echo VISIONOSSIMULATOR)"
 
+    # A dynamic library's install_name is what the linker copies into every
+    # binary that links it, so it has to name where the library will actually
+    # sit in the app -- and set HERE, before anything links against it, rather
+    # than patched into the app afterwards. Rewriting a linked binary in a
+    # build phase invalidates a signature Xcode has already applied on an
+    # incremental build, and the app then will not launch.
+    #
+    # Only dylibs have one; the static archives ignore this.
+    if [ -n "${LIB_INSTALL_NAME:-}" ]; then
+      install_name_tool -id "$LIB_INSTALL_NAME" "$lib" \
+        || fail "$name: could not set install_name on $lib"
+    fi
+
     local hdr
     if [ "$headers" = "@stage" ]; then
       # The normal case now that we install: take exactly what the project
@@ -463,16 +476,25 @@ build_openal() {
   # into a signed, provisioned .app would put us under the section-6
   # relinking obligation, which is genuinely awkward for a sandboxed bundle.
   # A dynamic framework the user can swap satisfies the same obligation the
-  # way LÖVE already does on Windows and Linux. It gets an Embed Frameworks
-  # phase in mobile/visionos/project.yml.
+  # way LÖVE already does on Windows and Linux.
+  #
+  # FRAMEWORK, and the install_name says so. A third-party dynamic library
+  # that is not inside a framework bundle is refused by App Store Connect --
+  # under the name "ITMS-90426: Invalid Swift Support", which mentions neither
+  # dylibs nor this library. mobile/visionos/project.yml assembles the bundle;
+  # this is the half that has to be right before the app is linked, because
+  # the linker copies this name into the app and it cannot be corrected
+  # afterwards without breaking the app's signature.
+  #
   # The glob picks the real versioned file rather than the libopenal.dylib
-  # symlink beside it; its install_name is already @rpath/libopenal.1.dylib,
-  # which is what the app's Embed Frameworks phase needs.
+  # symlink beside it.
+  LIB_INSTALL_NAME="@rpath/openal.framework/openal"
   cmake_dep openal 'libopenal.*.dylib' @stage \
     -DBUILD_SHARED_LIBS=ON \
     -DALSOFT_UTILS=OFF -DALSOFT_EXAMPLES=OFF -DALSOFT_TESTS=OFF \
     -DALSOFT_INSTALL_EXAMPLES=OFF -DALSOFT_INSTALL_UTILS=OFF \
     -DALSOFT_BACKEND_COREAUDIO=ON -DALSOFT_REQUIRE_COREAUDIO=ON
+  LIB_INSTALL_NAME=""
 }
 
 # Small guards so `build_deps.sh vorbis` alone still works.
