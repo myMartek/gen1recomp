@@ -86,6 +86,21 @@ return function(mod)
   counts.strings = each("strings", function(source, value)
     mod.content.strings:override(source, value)
   end)
+  -- The same registry, from a second catalog: the menu labels, read out of a
+  -- cartridge by tools/de_menus_from_rom.py.
+  --
+  -- A file of its own rather than more lines in strings.lua, because the two
+  -- have different owners. strings.lua is this project's own translation of
+  -- text the ENGINE writes and lives in the public repository; this one is
+  -- cartridge content and does not. Keeping them apart is what lets the port
+  -- gitignore one without losing the other, and it is why the port ships with
+  -- this file absent -- an absent catalog reads as empty and falls through to
+  -- English, which is exactly right for a clone that has no cartridge.
+  --
+  -- After strings.lua, so the cartridge wins where both have an opinion.
+  counts.menus = each("strings_rom", function(source, value)
+    mod.content.strings:override(source, value)
+  end)
   counts.species = each("species_names", function(id, value)
     mod.content.pokemon:patch(id, { name = value })
   end)

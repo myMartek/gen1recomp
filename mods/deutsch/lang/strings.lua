@@ -346,7 +346,7 @@ return {
   ["TIME"] = "",
   ["CONTINUE"] = "",
   ["NEW GAME"] = "",
-  ["EXIT GAME"] = "",
+  ["EXIT GAME"] = "SPIEL BEENDEN",
   ["POKéMON RED"] = "",
   ["2026 bois club games"] = "",
   ["OT/%s"] = "",

@@ -218,6 +218,125 @@ local function bootGame(version)
   Game.speedOverride = (autopilot or driverCo) and 1 or speedOverride
 end
 
+-- The mods this build carries, installed into the save directory once.
+--
+-- A packaged visionOS build has nobody to run scripts/push_mod_visionos.sh for
+-- it, so the wrapper puts the mod in as assets/bundled-mods/<name>.zip
+-- (bin/prepare.sh) and this is what unpacks it. Without it the launcher counts
+-- zero mods on a device, and the build's whole reason for existing -- the
+-- voxel world, and with it every gesture the hands drive -- is simply absent.
+--
+-- ONCE, and remembered. Fusing the mod into the bundle's own mods/ was
+-- rejected on purpose: the manager cannot delete what is in a read-only bundle
+-- and it returns on every launch. A marker per archive keeps Delete meaning
+-- what it says -- remove the mod and it stays removed.
+-- Identity of a bundled archive: size plus, where love.data can hash, its
+-- MD5.  Size alone would miss an edit that happens to preserve it; the hash
+-- alone would cost the read on a build whose love.data is older.  Both come
+-- from one read either way.
+local function archiveStamp(path)
+  local info = love.filesystem.getInfo(path)
+  local stamp = tostring(info and info.size or 0)
+  local ok, data = pcall(love.filesystem.read, path)
+  if ok and type(data) == "string" and love.data and love.data.hash then
+    local okHash, digest = pcall(love.data.hash, "md5", data)
+    if okHash and digest then
+      local okHex, hex = pcall(love.data.encode, "string", "hex", digest)
+      if okHex then stamp = stamp .. "-" .. hex end
+    end
+  end
+  return stamp
+end
+
+-- Whether an installed mod declares itself a translation, read from the copy
+-- that was just written rather than from the archive: by this point the mod is
+-- on disk under its own id, and the manifest there is the one the game will
+-- actually load.
+local function isLanguageMod(id)
+  local raw = love.filesystem.read("mods/" .. tostring(id) .. "/manifest.json")
+  if type(raw) ~= "string" then return false end
+  local okJ, Json = pcall(require, "src.link.Json")
+  if not okJ then return false end
+  local ok, data = pcall(Json.decode, raw)
+  return ok and type(data) == "table" and data.language == true
+end
+
+local function readMarker(marker)
+  if not love.filesystem.getInfo(marker) then return nil end
+  local ok, text = pcall(love.filesystem.read, marker)
+  if not ok or type(text) ~= "string" then return "" end
+  return (text:gsub("%s+$", ""))
+end
+
+local function installBundledMods()
+  local fs = love.filesystem
+  if not (fs and fs.getInfo and fs.getDirectoryItems) then return end
+
+  local dir = "assets/bundled-mods"
+  if not fs.getInfo(dir) then return end
+
+  local okMods, LauncherMods = pcall(require, "src.mods.LauncherMods")
+  if not okMods then return end
+
+  for _, name in ipairs(fs.getDirectoryItems(dir)) do
+    if name:lower():match("%.zip$") then
+      local path = dir .. "/" .. name
+      local marker = "bundled_" .. name .. ".installed"
+      -- The marker records WHICH archive went in, not merely that one did.
+      --
+      -- A bare "installed" flag makes the first install permanent: ship a new
+      -- build with a newer mod and the flag is still there, so the player
+      -- keeps running the old copy for ever -- with a fresh app binary around
+      -- it, which is worse than either half alone. Stamping the archive's
+      -- identity into the marker turns "already installed" into "this exact
+      -- archive is already installed", so a changed bundle installs itself
+      -- and an unchanged one still stays out of the way of someone who
+      -- deliberately removed it.
+      local stamp = archiveStamp(path)
+      local firstInstall = readMarker(marker) == nil
+      if readMarker(marker) ~= stamp then
+        -- Written whatever happens, so a broken archive is not retried on
+        -- every launch for ever.
+        fs.write(marker, stamp .. "\n")
+        -- replace: this is an update as often as it is a first install.
+        --
+        -- installZip answers OK-then-ID, not ID-then-error: the id is the
+        -- SECOND return value. Read the other way round it hands back the
+        -- boolean true as the mod's id, and everything downstream then writes
+        -- its enable flag under the key `true` -- a row in the options file
+        -- that matches no mod and switches nothing.
+        local ok, idOrErr = LauncherMods.installZip(path, { replace = true })
+        if ok then
+          local id = idOrErr
+          -- STATED EXPLICITLY, both ways, and only on a first install.
+          --
+          -- "Leave it alone" is not the same as "off" here: the loader treats
+          -- a mod with no flag as ENABLED, so a translation that merely goes
+          -- uncommented arrives switched on and the game comes up German
+          -- because of the order things were unpacked in. It has to be written
+          -- false.
+          --
+          -- The voxel world goes the other way for the opposite reason: on
+          -- this build it is not an optional extra, it is what the app is.
+          --
+          -- An UPDATE touches neither, so whatever the player chose survives:
+          -- installZip preserves the flag, and rewriting it here would undo a
+          -- deliberate switch at every app update.
+          if firstInstall then
+            pcall(LauncherMods.setEnabled, id, not isLanguageMod(id))
+          end
+          print(("[mods] %s bundled %s as %s")
+            :format(firstInstall and "installed" or "updated", name,
+                    tostring(id)))
+        else
+          print(("[mods] bundled %s could not be installed: %s")
+            :format(name, tostring(idOrErr)))
+        end
+      end
+    end
+  end
+end
+
 function love.load(args)
   -- Before anything can shell out (update check, mod index, ROM picker),
   -- claim one hidden console on Windows so those children inherit it instead
@@ -297,6 +416,8 @@ function love.load(args)
   -- focus and read aloud.  src/core/NativeShell.lua publishes what the shell
   -- needs and boots what it picks -- it does not reimplement any of it.
   if NativeShell.applies() then
+    installBundledMods()
+
     local function handToShell()
       NativeShell.begin(bootGame, function(v, slot)
         openEditor(v, slot, true)

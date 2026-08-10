@@ -395,7 +395,15 @@ function TitleState:openMenu()
   local th = #items * 2 + 2
   local menu = Menu.new(game, items, { tx = 0, ty = 0, tw = 13, th = th })
   -- full-width title LOGO zones would recolor this box; see sgbPalettes
-  menu.titleUiBox = { 0, 0, 12, th - 1 }
+  --
+  -- MEASURED FROM THE MENU, not from the 13 it was asked for. Menu widens
+  -- itself for a label that does not fit and may shift tx to keep the box on
+  -- screen, so a hardcoded region stops covering it the moment the words get
+  -- longer -- which is what a translation does. German's NEUES SPIEL pushed
+  -- the box one column past the protected zone, and that column was left to
+  -- the logo's own palette: a blue and red stripe down the right border,
+  -- exactly where the box had grown.
+  menu.titleUiBox = { menu.tx, 0, menu.tx + menu.tw - 1, th - 1 }
   game.stack:push(menu)
 end
 

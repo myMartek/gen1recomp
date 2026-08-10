@@ -16,6 +16,10 @@ import sys
 from pathlib import Path
 
 T = {
+    # The port's own title-screen row -- it has no cartridge equivalent, since
+    # a cartridge cannot be exited. Translated here rather than read out of a
+    # dump, like everything else in this table.
+    "EXIT GAME": "SPIEL BEENDEN",
     # ---- battle: what a move does ------------------------------------
     "%s\nflew up high!": "%s\nfliegt hoch!",
     "%s\ndug a hole!": "%s\ngräbt sich ein!",

@@ -88,3 +88,32 @@ mods/*-worksheet/
 # scaffold's keys, lang/font.lua, lang/charmap.lua and the engine-string
 # translation are ours to commit.
 mods/*/assets/font/*.png
+
+# CARTRIDGE-DERIVED TRANSLATION DATA -- never in this repository.
+#
+# This tree is public. The catalogs below are lifted out of a commercial
+# cartridge with tools/de_*_from_rom.py and are not ours to publish; the German
+# text that IS ours (lang/strings.lua, 185 lines the engine writes itself) is
+# committed and deliberately not listed here.
+#
+# They are generated on demand and, for the shipping build, kept in the private
+# wrapper repository under translations/ -- see its translations/README.md. A
+# `git add -A` in a tree that happens to have them lying around must not be the
+# thing that publishes them.
+mods/*/lang/dialogue.lua
+mods/*/lang/species_names.lua
+mods/*/lang/move_names.lua
+mods/*/lang/item_names.lua
+mods/*/lang/trainer_names.lua
+mods/*/lang/status_labels.lua
+mods/*/assets/font/*.png
+mods/*/lang/strings_rom.lua
+
+# GENERATED, and one of them carries cartridge content.
+#
+# bin/prepare.sh in the wrapper stages the mods into here and zips them, and
+# the German zip has the catalogs overlaid from the wrapper's private
+# translations/. Committing this directory would publish exactly what the
+# entries above exist to keep out, in a form no reviewer would think to look
+# inside.
+assets/bundled-mods/
