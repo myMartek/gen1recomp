@@ -1,13 +1,13 @@
--- Glyph pages this translation adds.  Delete the entry if the vanilla
--- alphabet already covers your language.
+-- Glyph pages this translation adds.
 --
--- base is the first glyph code the page owns.  0x100 and up is free space
--- above the vanilla $60/$80 pages, so this adds an alphabet rather than
--- replacing one.  Set `advance` if your glyphs are not 8px wide.
+-- Seven letters, cut from the German cartridge's own FontGraphics so
+-- they match the vanilla weight and baseline exactly rather than
+-- approximately. base is above the vanilla $60/$80 pages, so this ADDS
+-- an alphabet instead of replacing one and English is untouched.
 return {
-  -- deutsch = {
-  --   image = "assets/font/deutsch.png",
-  --   base = 0x100,
-  --   glyphsPerRow = 16,
-  -- },
+  deutsch = {
+    image = "assets/font/deutsch.png",
+    base = 0x100,
+    glyphsPerRow = 16,
+  },
 }

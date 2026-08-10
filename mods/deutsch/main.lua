@@ -53,10 +53,25 @@ return function(mod)
     -- exist. The load sits inside a pcall, so the page is skipped in silence
     -- and every glyph on it draws as a blank. Which is exactly what German
     -- looked like: the right words with holes where the umlauts belong.
-    if type(page) == "table" and type(page.image) == "string" then
-      page.image = mod.path .. "/" .. page.image
+    -- A DECLARED PAGE WITH NO SHEET IS WORSE THAN NO PAGE AT ALL.
+    --
+    -- Font.load loads a page's image inside a pcall and skips it in silence
+    -- when that fails, and every glyph on the missing page then draws as a
+    -- blank -- the right words with holes where the umlauts belong. The sheet
+    -- is cut from a cartridge and therefore never ships in the repository, so
+    -- a fresh clone legitimately has none. Say so once and leave the page
+    -- unregistered, which falls back to English instead of to gaps.
+    local relative = type(page) == "table" and page.image or nil
+    if type(relative) == "string" and not mod:read(relative) then
+      mod.log:warn("glyph page '%s': no sheet at %s. Run "
+                   .. "tools/de_font_from_rom.py against your own cartridge; "
+                   .. "until then this language draws in English.", id, relative)
+    else
+      if type(relative) == "string" then
+        page.image = mod.path .. "/" .. relative
+      end
+      mod.content.font:register(id, page)
     end
-    mod.content.font:register(id, page)
   end
   -- charmap: which byte sequence draws which code
   for seq, code in pairs(catalog("charmap")) do
