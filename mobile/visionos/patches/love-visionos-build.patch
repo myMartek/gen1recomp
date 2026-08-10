@@ -1,154 +1,3 @@
-Make LÖVE build for visionOS, render without a presentable layer, boot from a
-host that owns @main and its main thread, and adopt textures it did not create.
-
-Part 1 -- building at all. visionOS defines TARGET_OS_IPHONE, so config.h takes
-the LOVE_IOS branch and the iOS backend compiles, which is what we want: Metal,
-the iOS filesystem layout, the SDL3 UIKit path. Three things stop it:
-
-  1. common/ios.mm uses UIScreen in showGameList; visionOS has none, because
-     there is no single "main screen" to take bounds from. That function is
-     LÖVE's picker for several .love files and is unreachable for a bundle with
-     one fused game.love, so it only has to compile.
-  2. graphics/Graphics.cpp calls opengl::createInstance() unconditionally while
-     the Vulkan and Metal backends beside it are already guarded. Every GLES
-     symbol in XROS.sdk is API_UNAVAILABLE(visionos).
-  3. Hence a matching LOVE_GRAPHICS_OPENGL macro in config.h, defined
-     everywhere except visionOS. Worth upstreaming on its own: it makes "a
-     platform with no OpenGL backend" expressible, which is a gap today.
-
-Part 2 -- rendering with nowhere to present. A fully immersive visionOS app has
-no CAMetalLayer; frames go to CompositorServices drawables and the flat 2D
-image becomes a texture the host shows in a window or in-world.
-metal::Graphics::setMode accepts a null context and stands an offscreen texture
-in for the drawable. Render passes, MSAA resolve and screenshot readback keep
-working against it; only presentDrawable is skipped. MTLStorageModeShared so
-the host can read it back without a staging blit -- free on unified memory.
-
-Part 3 -- booting from a host that owns @main AND the main thread.
-love_visionos_boot() runs LÖVE without a main(); LOVE_NO_MAIN suppresses LÖVE's
-main() and SDL_main.h's takeover with it (SDL_MAIN_HANDLED), which otherwise
-leaves an undefined _SDL_main.
-
-Window::setWindow gets a headless path that creates NO SDL window at all. This
-is not an optimisation. SDL's UIKit backend touches UIApplication during both
-video init and window creation, and BoardServices asserts a main-run-loop
-barrier at each -- so with LÖVE on a thread of its own, which it must be for
-the host to keep its main thread for SwiftUI and CompositorServices, any of it
-traps. love_visionos_prepareOnMainThread() brings SDL's video and event
-subsystems up on the main thread first, so LÖVE's own SDL_InitSubSystem is a
-refcount bump that touches nothing.
-
-All of it is gated on love_visionos_getHeadless(), a runtime flag rather than
-an #ifdef, so the flat visionOS build keeps presenting through SDL's layer
-exactly as on iOS.
-
-Part 4 -- adopting textures LÖVE did not create. metal::Texture gains a
-constructor taking an existing id<MTLTexture>, and metal::Graphics a
-newTextureFromHandle() that wraps one as a render target, so a renderer can
-draw straight into CompositorServices drawables instead of into its own
-canvases followed by a copy.
-
-No ownership flag: under ARC, assigning retains and the destructor's
-texture = nil releases only our reference. No MSAA companion: a drawable
-arrives resolved, and a private MSAA texture for one we do not own would
-double memory the compositor already budgeted. No updateGraphicsMemorySize():
-counting a drawable would report memory this process never allocated. The
-Metal -> LÖVE format mapping throws on anything unrecognised rather than
-guessing, because a wrong guess is silently wrong colour.
-
-
-Part 5 -- reporting the save directory. love_visionos_saveDirectory() asks the
-filesystem module where LOVE actually writes. Guessing that from platform
-convention is how a ROM ends up in a directory the engine never looks at,
-which is exactly what happened.
-
-
-Part 6 -- love.xr. A plain table of functions (not a love Module: that would
-mean editing Module::ModuleType, a header everything includes, for no gain)
-exposing the CompositorServices frame loop and ARKit device anchor to Lua:
-beginFrame, views, eyeCanvas, submitFrame.
-
-Lua drives the loop. beginFrame() blocks until the compositor is ready and
-returns the pose for the frame being submitted; the alternative -- a host loop
-calling into Lua -- would render with whatever pose Lua last saw, already
-stale by submission. The per-eye field of view is handed over in OpenXR's
-signed convention, because that is what the voxel mod's VRRig and
-Mat4.fovProjection already consume.
-
-Part 7 -- one command queue, not two. love_visionos_commandQueue() hands the
-shell the queue LOVE submits on, and everything that samples the virtual
-screen encodes onto it: the flat launcher window and the panel the immersive
-renderer maps the frame onto.
-
-Both were using queues of their own. Metal keeps command buffers in commit
-order WITHIN a queue and gives no ordering at all BETWEEN queues, so a reader
-could encode its sample into the gap between LOVE's clear and LOVE's draws and
-come away with an empty frame -- intermittently, which looked like flicker and
-was reported as such from both presentations.
-
-Sharing the queue removes the race instead of narrowing it, at the price of
-not overlapping a reader's frame with LOVE's on the GPU. The alternative is a
-rotating set of snapshot textures plus an MTLSharedEvent to order them, which
-is the right answer if that serialisation ever shows up in a frame time; at
-these resolutions it should not.
-
-Part 8 -- submission order and frame pacing. love.xr renders from love.update,
-before LOVE's ordinary present() commits its Metal work. Flushing draw batches
-only closes no command buffer, so the compositor's present command could be
-committed first and display the previous eye image. submitXRCommands() closes
-and commits the eye render before encodePresent is committed on the same queue.
-
-The measured render loop sustains 45 submissions/s, so one repeat declares its
-cadence honestly to a 90 Hz compositor. CompositorServices counts repeats in
-addition to the first display; the old value of 2 therefore produced only 30
-new frames/s and visible trails. The non-foveated layer keeps the platform
-default of about 0.52: the device rejects tested values of 0.60 and 1.0
-without foveation and aborts the layer on current xrOS.
-
-Until the scene produces correctly oriented reverse-Z depth, the compositor
-depth is cleared to 0.1, safely inside its valid range. Clearing to exactly 0
-put every pixel on the far clip plane and the real device discarded the whole
-image; feeding the old ordinary, vertically mismatched scene depth was no
-better. The layer is retained across the compositor timing wait and its state
-is checked again before submission, because the Digital Crown can invalidate
-it during that wait.
-
-Part 9 -- foveated final presentation. xrOS rejects render-quality values above
-the platform default when foveation is disabled. The layer therefore reserves
-quality 1.0 with foveation enabled. The voxel scene renders directly into
-private colour and readable-depth intermediaries carrying the drawable's
-flipped eye-tracked MTLRasterizationRateMap. Their LÖVE dimensions are logical
-screen pixels while their Metal allocations contain only physical fragments,
-so geometry and screen-space effects are rasterized at true gaze density. A
-native pass maps the physical intermediary into the drawable with the regular
-rate map and performs the Metal vertical correction at the same time.
-An atomic host-frame bracket completes the ownership transfer: claim() first
-blocks new fallback frames, waits for any already in flight to finish, and only
-then starts Lua's loop. A boolean poll alone raced during the compositor timing
-wait and let both clients query one frame.
-Both loops use xrOS 26's drawable-array API and query it before starting frame
-submission; the deprecated single-drawable call aborts on foveated layers.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 diff --git a/src/common/config.h b/src/common/config.h
 index e52e220..c94ca0e 100644
 --- a/src/common/config.h
@@ -899,10 +748,10 @@ index 0000000..b9b1c1e
 +#endif // LOVE_XR_WRAP_XR_H
 diff --git a/src/modules/xr/wrap_XR.mm b/src/modules/xr/wrap_XR.mm
 new file mode 100644
-index 0000000..bb0f8fa
+index 0000000..fb7947f
 --- /dev/null
 +++ b/src/modules/xr/wrap_XR.mm
-@@ -0,0 +1,2664 @@
+@@ -0,0 +1,2830 @@
 +/**
 + * love.xr -- CompositorServices and ARKit, for visionOS.
 + *
@@ -2185,6 +2034,24 @@ index 0000000..bb0f8fa
 +			// The accessories come AFTER the answer: loading one before the
 +			// permission exists gets a provider that runs and reports nothing.
 +			dispatch_async(dispatch_get_main_queue(), ^{ rebuildAccessories(); });
++
++			// AND SO DOES THE SESSION ITSELF, for the same reason.
++			//
++			// The lesson above was drawn for the accessories and not applied
++			// to the providers that were already running: the run below
++			// happens while this request is still outstanding, so on the first
++			// launch after an install the hand provider starts unauthorized --
++			// and an unauthorized provider does not fail, it simply reports
++			// nothing, for the whole run. Granting the permission changes
++			// nothing by itself; something has to run the session again, and
++			// nothing did.
++			//
++			// Which is exactly what "the hands do nothing, the pad works"
++			// looks like from inside the headset.
++			//
++			// Re-running is cheap and is already how the tracked set is
++			// changed elsewhere in this file.
++			runProviders();
 +		});
 +
 +	runProviders();
@@ -3022,6 +2889,15 @@ index 0000000..bb0f8fa
 +// replaced, and handing Lua a new object each frame would make every canvas
 +// cache downstream rebuild itself.
 +static love::graphics::Texture *g_screenTexture = nullptr;
++// The Metal handle g_screenTexture was built from.
++//
++// A C++ static outlives a LOVE restart -- love.event.quit("restart") tears the
++// graphics module down and builds a new one, but nothing here is reset,
++// because this is the same process. So the wrapper went on handing Lua a
++// Texture belonging to a graphics module that no longer exists, and everything
++// that samples it -- the pokedex screen, the panel -- drew black. Remembering
++// which handle it was built from is what makes that detectable.
++static void *g_screenHandle = nullptr;
 +
 +static int w_screenTexture(lua_State *L)
 +{
@@ -3029,16 +2905,28 @@ index 0000000..bb0f8fa
 +	if (gfx == nullptr)
 +		return 0;
 +
++	void *handle = gfx->getVirtualScreenTexture();
++	if (handle == nullptr)
++		return 0;
++
++	// A DIFFERENT HANDLE MEANS A DIFFERENT RUN. Rebuild against it.
++	//
++	// Dropped rather than released: the object belongs to a graphics module
++	// that has already been destroyed, and calling into it to free something
++	// is a worse bug than leaving one texture wrapper behind. A restart is a
++	// rare, deliberate act -- one leaked wrapper per language change is a
++	// price worth paying for not touching freed memory.
++	if (g_screenTexture != nullptr && handle != g_screenHandle)
++		g_screenTexture = nullptr;
++
 +	if (g_screenTexture == nullptr)
 +	{
-+		void *handle = gfx->getVirtualScreenTexture();
-+		if (handle == nullptr)
-+			return 0;
 +		love::graphics::Texture *t = nullptr;
 +		luax_catchexcept(L, [&]() { t = gfx->newTextureFromHandle(handle); });
 +		if (t == nullptr)
 +			return 0;
 +		g_screenTexture = t;
++		g_screenHandle = handle;
 +	}
 +
 +	luax_pushtype(L, g_screenTexture);
@@ -3115,6 +3003,38 @@ index 0000000..bb0f8fa
 +// of both.
 +static const float FIST_GAP = 0.10f;
 +
++// A thumbs-up, measured on the hand rather than on its bearing: the thumb
++// reaching out of a closed hand (wrist to tip) and standing clear of the
++// folded index beside it. Generous for the same reason the pinch is -- a
++// threshold that feels exact is one that drops the gesture while it is held.
++static const float THUMB_OUT_GAP = 0.085f;
++static const float THUMB_CLEAR_GAP = 0.055f;
++
++// A flat, open hand -- every long finger extended, little one included. It is
++// the fist test read from the other end, and the wide band between the two
++// (0.10 to 0.14) is deliberate: a half-curled hand should be NEITHER, so that
++// a hand on its way from one shape to the other passes through nothing rather
++// than flickering between both.
++static const float OPEN_GAP = 0.14f;
++
++// A THUMBS-UP IS EASIER TO KEEP THAN TO START.
++//
++// The gesture exists to be held while the hand travels, and a travelling hand
++// is one the cameras read worse: it turns, the fingers face away, the skeleton
++// softens, and every gap wobbles. On one threshold that shows up as a walk
++// that only goes the way the hand was already pointing -- push it anywhere
++// else and the gesture dies halfway, taking the latched origin with it.
++//
++// So entering asks for the shape plainly, and staying only asks that it has
++// not become some OTHER shape. The band between the two is what a hand passes
++// through while it moves, and it belongs to whichever state the hand was
++// already in.
++static const float THUMB_HOLD_OUT_GAP = 0.070f;
++static const float THUMB_HOLD_CLEAR_GAP = 0.042f;
++static const float FIST_HOLD_GAP = 0.130f;
++// Per hand, by index: 0 left, 1 right.
++static bool g_thumbsUpHeld[2] = { false, false };
++
 +/**
 + * The hands, as gestures rather than skeletons.
 + *
@@ -3156,6 +3076,11 @@ index 0000000..bb0f8fa
 +		lua_createtable(L, 0, 6);
 +		ar_hand_anchor_t anchor = g_handAnchors[i];
 +		bool tracked = anchor != nullptr && ar_hand_anchor_is_tracked(anchor);
++		// A hand that has gone is not still making a gesture. Without this the
++		// loose hold above would survive the gap and re-latch on a hand that
++		// came back doing something else entirely.
++		if (!tracked)
++			g_thumbsUpHeld[i] = false;
 +
 +		lua_pushboolean(L, tracked);
 +		lua_setfield(L, -2, "tracked");
@@ -3199,10 +3124,20 @@ index 0000000..bb0f8fa
 +				ar_hand_skeleton_joint_name_thumb_tip,
 +				ar_hand_skeleton_joint_name_middle_finger_tip);
 +
++			// The ring finger too: with the index and middle pinches spoken
++			// for on both hands, it is the third gesture a hand can make
++			// without moving out of a comfortable rest -- and unlike a fist
++			// it does not overlap with the thumbs-up beside it.
++			float ringGap = jointGap(skel,
++				ar_hand_skeleton_joint_name_thumb_tip,
++				ar_hand_skeleton_joint_name_ring_finger_tip);
++
 +			lua_pushboolean(L, indexGap >= 0 && indexGap < PINCH_GAP);
 +			lua_setfield(L, -2, "pinchIndex");
 +			lua_pushboolean(L, middleGap >= 0 && middleGap < PINCH_GAP);
 +			lua_setfield(L, -2, "pinchMiddle");
++			lua_pushboolean(L, ringGap >= 0 && ringGap < PINCH_GAP);
++			lua_setfield(L, -2, "pinchRing");
 +
 +			// A fist: the three long fingers folded to the wrist together.
 +			// Testing all three keeps a pointing hand or a pinch from
@@ -3215,8 +3150,88 @@ index 0000000..bb0f8fa
 +				ar_hand_skeleton_joint_name_ring_finger_tip);
 +			bool fist = w1 >= 0 && w2 >= 0 && w3 >= 0
 +					 && w1 < FIST_GAP && w2 < FIST_GAP && w3 < FIST_GAP;
-+			lua_pushboolean(L, fist);
++			// The same fold, judged loosely -- for a gesture already under way
++			// (see THUMB_HOLD_OUT_GAP).
++			bool folded = w1 >= 0 && w2 >= 0 && w3 >= 0
++					   && w1 < FIST_HOLD_GAP && w2 < FIST_HOLD_GAP
++					   && w3 < FIST_HOLD_GAP;
++
++			// A thumbs-up: the same folded fingers, with the thumb standing
++			// clear of them.
++			//
++			// Two tests, because either alone lies. A thumb merely far from
++			// the wrist is also a pointing hand's thumb; a thumb merely clear
++			// of the index tip happens whenever the fingers are open. Together
++			// they describe one shape: fingers in, thumb out.
++			//
++			// The SHAPE only -- deliberately not "and pointing at the sky".
++			// A gesture that is held while the hand moves is a gesture whose
++			// wrist rolls, and a world-up test would drop it halfway through
++			// exactly the movement it exists to measure. What people call a
++			// thumbs-up is the hand, not its bearing.
++			float wt = jointGap(skel, ar_hand_skeleton_joint_name_wrist,
++				ar_hand_skeleton_joint_name_thumb_tip);
++			float ti = jointGap(skel, ar_hand_skeleton_joint_name_thumb_tip,
++				ar_hand_skeleton_joint_name_index_finger_tip);
++			bool thumbsUp = g_thumbsUpHeld[i]
++				? (folded && wt >= THUMB_HOLD_OUT_GAP
++						  && ti >= THUMB_HOLD_CLEAR_GAP)
++				: (fist && wt >= THUMB_OUT_GAP && ti >= THUMB_CLEAR_GAP);
++			g_thumbsUpHeld[i] = thumbsUp;
++
++			// A thumbs-up folds three fingers and would otherwise read as a
++			// fist as well -- and the fist is START. Reporting both would put
++			// the pause menu on screen every time this gesture began.
++			lua_pushboolean(L, fist && !thumbsUp);
 +			lua_setfield(L, -2, "fist");
++			lua_pushboolean(L, thumbsUp);
++			lua_setfield(L, -2, "thumbsUp");
++
++			// A flat hand, for gestures made by two of them: the three
++			// gaps above plus the little finger, all standing out.
++			//
++			// The little finger earns its place here even though the fist
++			// test does without it: a fist is unmistakable from three
++			// fingers, but a hand held out with the little one still
++			// curled is a shape people make without meaning anything by
++			// it, and it should not read as flat.
++			float w4 = jointGap(skel, ar_hand_skeleton_joint_name_wrist,
++				ar_hand_skeleton_joint_name_little_finger_tip);
++			bool open = w1 >= OPEN_GAP && w2 >= OPEN_GAP
++					 && w3 >= OPEN_GAP && w4 >= OPEN_GAP;
++			lua_pushboolean(L, open);
++			lua_setfield(L, -2, "open");
++
++			// WHERE THE THUMB POINTS, as a unit vector in the same space
++			// the pose is reported in.
++			//
++			// From the JOINTS, knuckle to tip, and deliberately not from
++			// the hand anchor's rotation: the anchor's axes do not line up
++			// with anything a person would call the palm -- the pokedex
++			// needs a quarter turn and an eighth on top of it to sit right
++			// -- so a direction derived from the anchor inherits a
++			// correction nobody has measured for the thumb. Two joints
++			// have no such quarrel: the line between them IS the thumb.
++			simd_float3 tk, tt;
++			if (jointPos(skel, ar_hand_skeleton_joint_name_thumb_knuckle, &tk)
++			 && jointPos(skel, ar_hand_skeleton_joint_name_thumb_tip, &tt))
++			{
++				simd_float3 d = tt - tk;
++				float len = simd_length(d);
++				if (len > 1e-5f)
++				{
++					// Into world with the ROTATION only: a direction has no
++					// position to be moved by, and translating it would turn
++					// a unit vector into a point somewhere across the room.
++					simd_float3 w = simd_normalize(
++						simd_mul(world, simd_make_float4(d.x, d.y, d.z, 0.0f)).xyz);
++					lua_createtable(L, 3, 0);
++					lua_pushnumber(L, w.x); lua_rawseti(L, -2, 1);
++					lua_pushnumber(L, w.y); lua_rawseti(L, -2, 2);
++					lua_pushnumber(L, w.z); lua_rawseti(L, -2, 3);
++					lua_setfield(L, -2, "thumbDir");
++				}
++			}
 +		}
 +
 +		lua_rawseti(L, -2, i + 1);

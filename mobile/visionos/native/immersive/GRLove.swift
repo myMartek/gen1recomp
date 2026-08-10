@@ -56,10 +56,37 @@ enum GRLove {
     /// the game. Alternating black and picture is precisely the flicker that
     /// caused. The texture is created once in setMode and never replaced.
     private static var cachedScreen: MTLTexture?
+    private static var cachedRaw: UnsafeMutableRawPointer?
+    private static var wantsFreshScreen = false
+
+    /// Tells the cache that LÖVE is about to build a new screen.
+    ///
+    /// "Created once and never replaced" holds for a run, and an engine
+    /// restart (the language switch) ends one run and starts another. Without
+    /// this the window keeps presenting the texture the previous LÖVE drew
+    /// into -- which nothing writes to any more, so every menu comes up black
+    /// while the game behind it renders fine. That is not a caching detail; it
+    /// is the whole visible symptom.
+    static func invalidateVirtualScreen() {
+        wantsFreshScreen = true
+    }
 
     static var virtualScreen: MTLTexture? {
-        if let cached = cachedScreen { return cached }
-        guard let raw = love_visionos_virtualScreenTexture() else { return nil }
+        if !wantsFreshScreen, let cached = cachedScreen { return cached }
+        guard let raw = love_visionos_virtualScreenTexture() else {
+            // Mid-restart there is no screen at all for a few frames. The last
+            // one is dead but it is a picture; nil here would be a black flash
+            // on every switch.
+            return cachedScreen
+        }
+        if wantsFreshScreen {
+            // The SAME pointer means the new run has not called setMode yet.
+            // Accepting it would re-cache the dead texture and leave the
+            // window black for good, which is the bug this exists to avoid.
+            if raw == cachedRaw { return cachedScreen }
+            wantsFreshScreen = false
+        }
+        cachedRaw = raw
         cachedScreen = Unmanaged<AnyObject>.fromOpaque(raw).takeUnretainedValue() as? MTLTexture
         return cachedScreen
     }
