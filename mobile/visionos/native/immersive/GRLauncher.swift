@@ -16,6 +16,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// One literal rather than a concatenation inside the view: SwiftUI bodies are
+/// type-checked as a single expression, and a `+` chain of strings in there is
+/// a well-known way to push that past its time limit. It is also the key the
+/// .strings files are written against, so it has to match them byte for byte.
+private let languageWarning =
+    "The language is part of a mod, and mods are loaded when the game starts. "
+    + "The running game has to end for the change to take effect. Nothing is "
+    + "saved automatically -- save first if you want to keep your progress."
+
 struct GRLauncherView: View {
 
     @Environment(GRAppModel.self) private var model
@@ -37,6 +46,15 @@ struct GRLauncherView: View {
     @State private var importInto: String?
     @State private var showSavePicker = false
     @State private var romMessage = ""
+    /// A language the player has chosen but not yet paid for.
+    ///
+    /// The language is a mod, and mods merge once at load -- so changing it
+    /// with a game in memory means ending that game. That is not something to
+    /// do behind somebody's back on a menu pick, so the choice waits here
+    /// until it is confirmed, and the picker keeps showing the old value in
+    /// the meantime (its binding reads the shell, which has not been told).
+    @State private var pendingLanguage: GRSetting.Choice?
+    @State private var showHelp = false
     @State private var pads = GRControllers()
     /// The save the player asked to export; presenting the share sheet.
     @State private var exportURL: URL?
@@ -87,7 +105,17 @@ struct GRLauncherView: View {
                       allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
-                if let url = urls.first { romMessage = GRRomImport.accept(url) }
+                guard let url = urls.first else { break }
+                // Copy, then ask the engine to decode it now. What it makes of
+                // the file -- progress, or a refusal with the reason -- comes
+                // back through the snapshot and is drawn by importRow, so this
+                // only has to report a copy that did not happen.
+                if let failure = GRRomImport.accept(url) {
+                    romMessage = failure
+                } else {
+                    romMessage = ""
+                    shell.importRom()
+                }
             case .failure(let error):
                 romMessage = "Import cancelled: \(error.localizedDescription)"
             }
@@ -176,13 +204,22 @@ struct GRLauncherView: View {
                     }
                 } else if let game = selected {
                     versionRow(game)
+                    // Above the saves: while a cartridge is being decoded it is
+                    // the only thing happening, and afterwards it is where the
+                    // reason for a refusal is.
+                    if let state = shell.importing { importRow(state) }
                     savesSection(game)
                     // Above the lists, not below them. Mods and settings grow
                     // without bound -- the settings alone are nine rows -- and
                     // the one thing the player came here to press must not be
                     // the one thing they have to scroll to find.
                     startRow(game)
-                    if !shell.mods.isEmpty { modList }
+                    // Behind the debug gate (ten presses on a save slot). On
+                    // this build the one mod that matters is not optional --
+                    // it IS the app -- so the list is a developer's row, and
+                    // an inviting switch that turns the voxel world off is not
+                    // something to put in a player's way.
+                    if shell.debug && !shell.mods.isEmpty { modList }
                     if !shell.settings.isEmpty { settingsList }
                 }
 
@@ -241,6 +278,12 @@ struct GRLauncherView: View {
                 Text("No saves yet — starting will begin a new game.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                // The buttons belong here too. They used to live only in the
+                // branch below, so somebody who had just imported a cartridge
+                // and had no saves yet was told there were none and offered no
+                // way to bring one in -- which is exactly the moment a save
+                // from another device would be carried over.
+                saveButtons(game)
             } else {
                 ForEach(game.slots ?? []) { slot in
                     Button {
@@ -293,14 +336,7 @@ struct GRLauncherView: View {
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                 }
 
-                HStack(spacing: 16) {
-                    Button("New save") { shell.newSlot(version: game.id) }
-                    Button("Import save…") {
-                        importInto = game.id
-                        showSavePicker = true
-                    }
-                }
-                .font(.callout)
+                saveButtons(game)
             }
         }
         .fileImporter(isPresented: $showSavePicker,
@@ -313,6 +349,52 @@ struct GRLauncherView: View {
             romMessage = shell.importSlot(version: version, from: url)
                 ? tr("Save imported.") : tr("That save could not be read.")
         }
+    }
+
+    private func saveButtons(_ game: GRGame) -> some View {
+        HStack(spacing: 16) {
+            Button("New save") { shell.newSlot(version: game.id) }
+            Button("Import save…") {
+                importInto = game.id
+                showSavePicker = true
+            }
+        }
+        .font(.callout)
+    }
+
+    /// What the engine is doing with the cartridge, while it does it.
+    ///
+    /// The import used to happen on the NEXT launch, so this view had nothing
+    /// to show and the app asked for a restart instead. It also had nothing to
+    /// say when a file was refused -- and a refused ROM looks precisely like an
+    /// accepted one that has not been decoded yet.
+    @ViewBuilder
+    private func importRow(_ state: GRImport) -> some View {
+        HStack(spacing: 12) {
+            if state.isWorking {
+                ProgressView(value: min(max(state.progress ?? 0, 0), 1))
+                    .frame(width: 120)
+            } else {
+                Image(systemName: state.failed
+                      ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(state.failed ? Color.orange : Color.green)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.status ?? "")
+                // The reason, when there is one. A refusal names the hash it
+                // found and what it expected, which is the only way anybody
+                // finds out their dump is a patched one.
+                if let detail = state.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func startRow(_ game: GRGame) -> some View {
@@ -374,7 +456,19 @@ struct GRLauncherView: View {
     /// would mean tapping a row six times to reach the seventh value.
     private var settingsList: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Settings").font(.title2.weight(.medium))
+            HStack {
+                Text("Settings").font(.title2.weight(.medium))
+                Spacer()
+                // Next to the settings rather than in a toolbar: this window
+                // has no toolbar, and the controls are the one thing a player
+                // goes looking for BEFORE they play rather than after.
+                Button {
+                    showHelp = true
+                } label: {
+                    Label(tr("help.title"), systemImage: "questionmark.circle")
+                }
+                .buttonStyle(.borderless)
+            }
 
             ForEach(shell.settings) { setting in
                 HStack {
@@ -385,6 +479,13 @@ struct GRLauncherView: View {
                         set: { label in
                             guard let c = setting.choices.first(where: { $0.label == label })
                             else { return }
+                            // The language costs the running game (mods merge
+                            // at load), so it asks first. Everything else
+                            // applies on the pick, as it always has.
+                            if setting.id == "language", shell.booted {
+                                pendingLanguage = c
+                                return
+                            }
                             shell.setOption(setting.id, value: c.value)
                         }
                     )) {
@@ -399,6 +500,47 @@ struct GRLauncherView: View {
                 .padding(.vertical, 8)
             }
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .sheet(isPresented: $showHelp) { GRHelpView() }
+        .confirmationDialog(
+            tr("Change the language?"),
+            isPresented: Binding(get: { pendingLanguage != nil },
+                                 set: { if !$0 { pendingLanguage = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button(tr("End the game and switch"), role: .destructive) {
+                if let choice = pendingLanguage { switchLanguage(to: choice) }
+            }
+            Button(tr("Keep playing"), role: .cancel) { pendingLanguage = nil }
+        } message: {
+            Text(tr(languageWarning))
+        }
+    }
+
+    /// Applies a language and gets the engine to a state where it can take it:
+    /// the simulation closes and the engine reloads.
+    ///
+    /// In that order, and both are needed. Closing the space alone leaves the
+    /// game in memory, where Play resumes it and the new mod set is never
+    /// merged; reloading alone would tear the world down underneath a player
+    /// who is still standing in it.
+    private func switchLanguage(to choice: GRSetting.Choice) {
+        pendingLanguage = nil
+        Task { @MainActor in
+            if model.immersiveState == .open {
+                model.immersiveState = .inTransition
+                await dismissImmersiveSpace()
+            }
+            // The engine comes back at the launcher, so the window must not
+            // think a game is still loaded -- otherwise the next language
+            // change would ask this same question about a game that is gone.
+            model.bootedVersion = nil
+            // The new run builds a new screen texture, and the window caches
+            // the old one for the life of a run. Without this it presents the
+            // dead one and every menu draws black.
+            GRLove.invalidateVirtualScreen()
+            // ONE command, carrying the setting: see restartEngine.
+            shell.restartEngine(applying: ("language", choice.value))
         }
     }
 

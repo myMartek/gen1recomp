@@ -37,8 +37,14 @@ enum GRRomImport {
         return names.contains { $0.lowercased().hasSuffix(".gb") || $0.lowercased().hasSuffix(".gbc") }
     }
 
-    /// Copies a picked file in as picked_rom.gb. Returns a message to show.
-    static func accept(_ source: URL) -> String {
+    /// Copies a picked file in as picked_rom.gb. Returns nil when that worked,
+    /// or a message to show when it did not.
+    ///
+    /// Only the copy. What the file IS -- a cartridge this engine knows, or one
+    /// it refuses -- is the engine's answer, and it gives it while the app runs
+    /// (GRShell.importRom). This used to end with "Restart to decode it",
+    /// which was true and is no longer.
+    static func accept(_ source: URL) -> String? {
         guard let dir = saveDirectory else { return "No save directory." }
 
         // A file from the document picker lives outside the sandbox until
@@ -55,7 +61,7 @@ enum GRRomImport {
             // the engine identifies the ROM by SHA-1 rather than by name.
             let dest = dir.appendingPathComponent("picked_rom.gb")
             try data.write(to: dest, options: .atomic)
-            return "Imported \(source.lastPathComponent) (\(data.count / 1024) KB). Restart to decode it."
+            return nil
         } catch {
             return "Import failed: \(error.localizedDescription)"
         }

@@ -123,12 +123,32 @@ enum GRJSONValue: Equatable, Decodable {
     }
 }
 
+/// What the engine is doing with a cartridge the player just handed it.
+///
+/// Nil until the first import of a run. The window used to say "restart to
+/// decode it" and had nothing else to offer -- neither progress nor the reason
+/// a file was refused, which made a rejected ROM look exactly like a working
+/// one that had done nothing.
+struct GRImport: Equatable, Decodable {
+    /// "working", "complete" or "error", from the importer itself.
+    let state: String
+    let status: String?
+    let detail: String?
+    let progress: Double?
+
+    var isWorking: Bool { state == "working" }
+    var failed: Bool { state == "error" }
+}
+
 private struct GRShellState: Decodable {
     let games: [GRGame]
     let mods: [GRMod]
     let settings: [GRSetting]?
     let exportFile: String?
     let editing: Bool?
+    let `import`: GRImport?
+    let debug: Bool?
+    let booted: Bool?
 }
 
 @MainActor
@@ -155,6 +175,19 @@ final class GRShell {
     /// command written straight into the channel, which is how the editor is
     /// driven under test.
     private(set) var editing = false
+
+    /// The running or last-finished cartridge import, as the engine reports it.
+    private(set) var importing: GRImport?
+
+    /// Whether a game is loaded in the engine -- which outlasts the immersive
+    /// space, since the Crown leaves the game in memory. Straight from the
+    /// engine rather than tracked here: an engine restart resets it, and a
+    /// copy kept in the window would go on claiming a game that is gone.
+    private(set) var booted = false
+
+    /// Whether the debug gate is open -- ten presses on a save slot, kept in
+    /// the mod's own options. The window shows a developer's rows only then.
+    private(set) var debug = false
 
     private var pollTask: Task<Void, Never>?
 
@@ -206,6 +239,9 @@ final class GRShell {
         let incoming = decoded.settings ?? []
         if incoming != settings { settings = incoming }
         if decoded.exportFile != exportFile { exportFile = decoded.exportFile }
+        if decoded.import != importing { importing = decoded.import }
+        if (decoded.booted ?? false) != booted { booted = decoded.booted ?? false }
+        if (decoded.debug ?? false) != debug { debug = decoded.debug ?? false }
         if !hasState { hasState = true }
     }
 
@@ -332,6 +368,21 @@ final class GRShell {
         return true
     }
 
+    /// Decode a cartridge the player just picked, now.
+    ///
+    /// GRRomImport has already copied it into the save directory; this tells
+    /// the engine to read it while the app is running. Before, nothing did:
+    /// the file sat there until the next launch, and a file the importer
+    /// refuses said nothing at all.
+    func importRom(file: String = "picked_rom.gb") {
+        // Optimistic, unlike editSlot above, and for the opposite reason: the
+        // engine takes a moment to answer and the player has just pressed a
+        // button on a file picker. Silence there reads as nothing happened.
+        importing = GRImport(state: "working", status: tr("Reading the cartridge"),
+                             detail: nil, progress: 0)
+        send(["action": "importRom", "file": file])
+    }
+
     /// Hands a slot to the engine's own save editor. The picture in the
     /// launcher window becomes the editor, and its Close brings this back.
     func editSlot(version: String, slot: String) {
@@ -358,5 +409,26 @@ final class GRShell {
     /// returns here, so this is one-way.
     func boot(version: String) {
         send(["action": "boot", "version": version])
+    }
+
+    /// Tears the engine down and brings it straight back up, in the same
+    /// process.
+    ///
+    /// For the settings that are only read while the game loads -- the
+    /// language, which is a mod, and mods merge exactly once. Going back to
+    /// the launcher does not do it: the launcher is the same run, and Play
+    /// deliberately RESUMES a game that is already in memory rather than
+    /// loading it a second time.
+    /// - Parameter option: a settings row to apply on the way out. It travels
+    ///   WITH the restart because the channel is one file: a separate
+    ///   `setOption` written a moment earlier is overwritten by this command
+    ///   before the engine's next poll reads either, and the setting is simply
+    ///   lost -- the game restarts in the language it already had.
+    func restartEngine(applying option: (id: String, value: GRJSONValue)? = nil) {
+        var cmd: [String: Any] = ["action": "restart"]
+        if let option {
+            cmd["option"] = ["id": option.id, "value": option.value.json]
+        }
+        send(cmd)
     }
 }

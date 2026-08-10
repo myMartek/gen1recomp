@@ -92,8 +92,16 @@ function StartMenu.new(game)
 
   -- the manager's pause-menu entry (18-mod-manager-ux): gated on at least
   -- one discovered mod so a vanilla install's menu is unchanged
+  --
+  -- AND, in the headset, on the debug gate as well. That build ships its one
+  -- mod itself and cannot run without it, so the row is not a choice anybody
+  -- is being offered -- it is a developer's door, opened by the same ten
+  -- presses that unhide the rest of them (NativeShell.debugEnabled). A desktop
+  -- install, where mods really are the player's to manage, is untouched.
   local status = game.modStatus
-  if status and #(status.available or {}) > 0 then
+  local NativeShell = require("src.core.NativeShell")
+  local modsHidden = NativeShell.applies() and not NativeShell.debugEnabled()
+  if status and #(status.available or {}) > 0 and not modsHidden then
     table.insert(items, { label = Strings("MODS"), onSelect = function()
       Screens.push(game, "ManagerState")
     end })

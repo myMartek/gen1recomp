@@ -246,19 +246,24 @@ final class GRImmersiveRenderer {
         frame.startUpdate()
         frame.endUpdate()
 
-        // EVERY exit from here on closes the frame.
+        // A FRAME WITH NOTHING TO PRESENT IS ABANDONED, NOT SUBMITTED.
         //
-        // A frame that is queried and then abandoned keeps whatever the
-        // compositor lent it. The next client to ask for a drawable waits for
-        // it -- and waits, because nobody is going to give it back. That is
-        // exactly where the mod's render thread was found parked in the
-        // simulator: inside cp_frame_query_drawable, for ever, until wakeboard
-        // killed the app for sending no frames.
-        guard let timing = frame.predictTiming() else {
-            frame.startSubmission()
-            frame.endSubmission()
-            return
-        }
+        // This used to open and immediately close a submission on the way out,
+        // to avoid leaving the compositor holding a frame nobody finished. It
+        // is the wrong way to let go: a submission for a frame that never
+        // queried a drawable is a client error, and CompositorServices does
+        // not return an error for it -- it aborts the process.
+        //
+        //   Thread gen1recomp.compositor
+        //     cp_frame_start_submission
+        //     __BUG_IN_CLIENT__ -> abort()
+        //
+        // Which is what pressing the Digital Crown did: a space on its way out
+        // stops handing out timing and drawables, both guards below fired, and
+        // the app took itself down instead of ending the session. Returning is
+        // what Apple's own loop does, and releasing the frame is what gives it
+        // back.
+        guard let timing = frame.predictTiming() else { return }
         // Sleeping until the optimal input time is what keeps the head pose
         // fresh: everything sampled after this is closer to the moment the
         // frame is actually shown.
@@ -269,11 +274,7 @@ final class GRImmersiveRenderer {
         // must be queried before submission starts.
         let drawables = frame.queryDrawables()
         guard let drawable = drawables.first(where: { $0.target == .builtIn })
-                ?? drawables.first else {
-            frame.startSubmission()
-            frame.endSubmission()
-            return
-        }
+                ?? drawables.first else { return }
 
         frame.startSubmission()
 
