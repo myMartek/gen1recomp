@@ -36,6 +36,17 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 
+	<!-- Export compliance, answered here instead of by hand on every upload.
+	     Without it App Store Connect holds each build and asks the same
+	     question in the browser before it can go to a tester.
+
+	     False is the accurate answer: this app implements no encryption of its
+	     own and calls none. It has no accounts, no server, nothing to protect
+	     in transit -- the cartridge the player supplies is read, decoded and
+	     kept on the device, and never leaves it. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
 	<!-- The launcher window is the default scene rather than the immersive
 	     space. That is deliberate: the ROM importer needs somewhere to present
 	     a file picker, and an app that launches straight into an ImmersiveSpace

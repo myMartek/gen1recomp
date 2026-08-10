@@ -204,30 +204,7 @@ function DemoWorld:draw()
   end
   self:drawWalker()
 
-  self:drawCaption()
   love.graphics.setColor(1, 1, 1)
-end
-
-function DemoWorld:drawCaption()
-  local w = self.width
-  local font = love.graphics.getFont()
-  local lines = {
-    "DEMO",
-    "This is the app's own demo world.",
-    "It needs no cartridge, and it is not the game.",
-    "Import your own Red, Blue or Yellow to play.",
-  }
-
-  local pad = 14
-  local lineHeight = font:getHeight() * 1.35
-  local boxH = pad * 2 + lineHeight * #lines
-  love.graphics.setColor(0, 0, 0, 0.45)
-  love.graphics.rectangle("fill", 0, 0, w, boxH)
-
-  love.graphics.setColor(1, 1, 1)
-  for i, line in ipairs(lines) do
-    love.graphics.print(line, pad, pad + lineHeight * (i - 1))
-  end
 end
 
 return DemoWorld
