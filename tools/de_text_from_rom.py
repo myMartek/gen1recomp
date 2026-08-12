@@ -409,9 +409,11 @@ def by_alignment(us, de, where, anchors, found):
             german = [(o, decode(de, o)) for o in text_runs(de, da0, da1)[1:]]
             if not english or not german:
                 continue
-            # The grid is n*m cells; a pathological segment is not worth the
-            # seconds, and there is another pass behind this one.
-            if len(english) * len(german) > 20000:
+            # The grid is n*m cells. This was 20000 and that was far too shy:
+            # it skipped whole segments and left 439 texts to the guessier pass
+            # behind it, to save a second of arithmetic. At this ceiling
+            # nothing in either cartridge is skipped at all.
+            if len(english) * len(german) > 400000:
                 continue
             for label, at in align(english, german):
                 if label in found:
