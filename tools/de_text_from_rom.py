@@ -529,6 +529,62 @@ def by_alignment(us, de, where, anchors, found):
     return added
 
 
+
+# ------------------------------------------------- pairs settled by reading
+#
+# The item effects cannot be aligned by counting, because the German build
+# splits a sentence the English one keeps whole: "{MON} recovered by <n> HP!"
+# is one text in the US cartridge and TWO runs in the German one. That single
+# extra run slides everything behind it by one, which is how BURN HEAL ended
+# up announcing a cured paralysis.
+#
+# They are a contiguous run in each release, so one unmistakable line is
+# enough to place all of them: the cure for poison names the poison, and
+# nothing else in that bank does. From there they are counted off in order --
+# which is what a person does when reading nine lines side by side, and what
+# this encodes.
+# "defrosted" is the one line in that bank nothing else says -- the cure
+# for poison would have done too, except the blackboard in the school
+# explains poison as well, and a marker has to be unique to be an anchor.
+DEFROSTED = "aufgetaut"
+ITEM_EFFECTS = {
+    -5: "_PotionText",        # the number of points is a run of its own
+    -3: "_AntidoteText",
+    -2: "_ParlyzHealText",
+    -1: "_BurnHealText",
+    0: "_IceHealText",
+    1: "_AwakeningText",
+    2: "_FullHealText",
+    3: "_ReviveText",
+    4: "_RareCandyText",
+}
+ITEM_EFFECT_BANK = 34
+
+
+def by_reading(de, found):
+    """Last pass: the lines a person paired by reading them."""
+    runs = [decode(de, at) for at in
+            text_runs(de, ITEM_EFFECT_BANK * 0x4000, (ITEM_EFFECT_BANK + 1) * 0x4000)]
+    here = [i for i, text in enumerate(runs) if DEFROSTED in text]
+    if len(here) != 1:
+        return 0
+    anchor = here[0]
+    added = 0
+    for step, label in ITEM_EFFECTS.items():
+        i = anchor + step
+        if not 0 <= i < len(runs):
+            continue
+        text = runs[i]
+        # whoever else was given this line had it by a slip of the alignment
+        for other, had in list(found.items()):
+            if had == text and other != label:
+                del found[other]
+        if found.get(label) != text:
+            found[label] = text
+            added += 1
+    return added
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
@@ -586,6 +642,7 @@ def main():
     # this one makes is one the guessier pass never gets asked about.
     through_dex = by_dex_measurements(us, de, symbols, by_address, found)
     through_align = by_alignment(us, de, at, anchors, found)
+    through_reading = by_reading(de, found)
     through_sites = by_pointer_site(us, de, by_address, at, found)
 
     path = mod / "lang" / "dialogue.lua"
@@ -608,6 +665,7 @@ def main():
     print("  through map tables        %d" % through_tables)
     print("  through dex measurements  %d" % through_dex)
     print("  through alignment         %d" % through_align)
+    print("  paired by reading         %d" % through_reading)
     print("  through pointer sites     %d (structure-checked)" % through_sites)
     print("  filled                    %d" % filled)
     print("  inline script             %d (not text)" % asm)
