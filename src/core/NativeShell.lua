@@ -145,6 +145,25 @@ local function stadiumRomFile()
   return nil
 end
 
+-- Everything the window has to know about the cartridge, in one field: is a
+-- file there, are the models built, and -- while it is happening -- how far the
+-- build has got. The build itself runs HERE, in the launcher, rather than
+-- waiting for somebody to start a game and walk into the world; see
+-- src/mods/StadiumInstaller.lua.
+local function stadiumState()
+  local out = { installed = stadiumInstalled(), rom = stadiumRomFile() ~= nil }
+  local ok, progress = pcall(function()
+    return require("src.mods.StadiumInstaller").progress()
+  end)
+  if ok and type(progress) == "table" then
+    out.building = true
+    out.done = progress.done
+    out.total = progress.total
+    out.error = progress.error
+  end
+  return out
+end
+
 local function buildSettings()
   if SETTINGS then return SETTINGS end
   local ok, built = pcall(function()
@@ -469,8 +488,7 @@ local function snapshot()
            -- from it. Between those two the player has handed over a large
            -- file and nothing visible has happened yet, which is exactly when
            -- an app has to say something.
-           stadium = { installed = stadiumInstalled(),
-                       rom = stadiumRomFile() ~= nil },
+           stadium = stadiumState(),
            ready = true }
 end
 
@@ -595,6 +613,23 @@ local function applyCommand(cmd)
   -- The window has just copied a file in and wants it decoded now.
   if cmd.action == "importRom" then
     if not importer then startRomImport(cmd.file or "picked_rom.gb") end
+    return
+  end
+
+  -- The Pokémon Stadium cartridge, just copied into baseroms/ by the window.
+  -- Built right here rather than on the first frame of a game: the player is
+  -- standing in the launcher with the file in their hand, and that is when
+  -- they expect something to happen. A failure is published in the same field
+  -- the progress is, so the window says it where it asked for the file.
+  if cmd.action == "buildStadium" then
+    local ok, err = pcall(function()
+      return require("src.mods.StadiumInstaller").begin()
+    end)
+    if not ok then
+      Logger.warn("native shell: the stadium build would not start: %s",
+                  tostring(err))
+    end
+    lastPublished = nil
     return
   end
 
@@ -922,6 +957,10 @@ function NativeShell.update(dt)
   -- between the yields of its own coroutine, so it advances once per call.
   -- Ten calls a second would stretch a minute of decoding into ten.
   pumpImport(dt)
+  -- and the Stadium models, for the same reason and on the same terms: it
+  -- steps against a time budget of its own, so this only has to be the thing
+  -- that calls it often.
+  pcall(function() require("src.mods.StadiumInstaller").pump() end)
 
   timer = timer + (dt or 0)
   if timer < POLL_INTERVAL then return end

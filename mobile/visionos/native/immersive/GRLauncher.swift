@@ -482,6 +482,20 @@ struct GRLauncherView: View {
                     showStadiumPicker = true
                 }
                 .buttonStyle(.borderless)
+                // Nothing to press while it is building: a second cartridge
+                // handed in mid-build would be read into the set the first one
+                // is still writing.
+                .disabled(shell.stadium?.isBuilding == true)
+            }
+            if shell.stadium?.isBuilding == true {
+                // Determinate once the build knows its own size, and a spinner
+                // until then -- a bar sitting at zero says "stuck", which is
+                // the one thing this is not.
+                if let fraction = shell.stadium?.fraction {
+                    ProgressView(value: fraction)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
             }
             if !stadiumMessage.isEmpty {
                 Text(stadiumMessage)
@@ -508,6 +522,11 @@ struct GRLauncherView: View {
                     stadiumMessage = failure
                 } else {
                     stadiumMessage = ""
+                    // Straight into the build, here in the launcher. Waiting
+                    // for a game to be started and walked into would be a
+                    // strange thing to ask of somebody who just handed over
+                    // the cartridge.
+                    shell.buildStadium()
                 }
             case .failure(let error):
                 stadiumMessage = tr("stadium.cancelled", error.localizedDescription)
@@ -518,6 +537,10 @@ struct GRLauncherView: View {
     /// The three things this row can be saying, in the order a player meets
     /// them: no cartridge, one waiting to be built from, models ready.
     private var stadiumDetail: LocalizedStringKey {
+        if let error = shell.stadium?.error, !error.isEmpty {
+            return LocalizedStringKey(error)
+        }
+        if shell.stadium?.isBuilding == true { return "stadium.building" }
         if shell.stadium?.isInstalled == true { return "stadium.ready" }
         if shell.stadium?.isPending == true { return "stadium.pending" }
         return "stadium.absent"

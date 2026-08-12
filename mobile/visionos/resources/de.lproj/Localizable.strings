@@ -212,9 +212,11 @@
 "stadium.import" = "Importieren…";
 "stadium.replace" = "Ersetzen…";
 "stadium.absent" = "Optional. Mit einem eigenen Abzug deiner Pokémon-Stadium-Cartridge (US) werden Kämpfe mit den Modellen aus diesem Spiel ausgetragen.";
-"stadium.pending" = "Cartridge gefunden. Die Modelle werden einmalig beim nächsten Start gebaut.";
+"stadium.pending" = "Cartridge gefunden. Die Modelle werden einmalig gebaut.";
 "stadium.ready" = "Modelle sind gebaut. Auswählbar unter Battles.";
 "stadium.cancelled" = "Import abgebrochen: %@";
 
 "Battles" = "Kämpfe";
 "Standard" = "Standard";
+
+"stadium.building" = "Die Modelle werden aus der Cartridge gebaut…";

@@ -213,9 +213,11 @@
 "stadium.import" = "Import…";
 "stadium.replace" = "Replace…";
 "stadium.absent" = "Optional. Supply your own Pokémon Stadium (US) cartridge dump and battles are fought with that game's models.";
-"stadium.pending" = "Cartridge found. The models are built once, on the next start.";
+"stadium.pending" = "Cartridge found. The models are built once.";
 "stadium.ready" = "Models are built. Choose them under Battles.";
 "stadium.cancelled" = "Import cancelled: %@";
 
 "Battles" = "Battles";
 "Standard" = "Standard";
+
+"stadium.building" = "Building the models from the cartridge…";

@@ -162,9 +162,21 @@ private struct GRShellState: Decodable {
 struct GRStadium: Equatable, Decodable {
     let installed: Bool?
     let rom: Bool?
+    /// Set while the models are being built, with how far it has got.
+    let building: Bool?
+    let done: Int?
+    let total: Int?
+    let error: String?
 
     var isInstalled: Bool { installed == true }
-    var isPending: Bool { installed != true && rom == true }
+    var isBuilding: Bool { building == true }
+    var isPending: Bool { installed != true && rom == true && building != true }
+
+    /// 0…1, or nil before the build knows how much there is to do.
+    var fraction: Double? {
+        guard let done, let total, total > 0 else { return nil }
+        return min(1, Double(done) / Double(total))
+    }
 }
 
 @MainActor
@@ -402,6 +414,14 @@ final class GRShell {
         importing = GRImport(state: "working", status: tr("Reading the cartridge"),
                              detail: nil, progress: 0)
         send(["action": "importRom", "file": file])
+    }
+
+    /// Build the Pokémon Stadium models out of the cartridge just copied into
+    /// `baseroms/`. The engine does it in the launcher, so this is the whole
+    /// of it -- no game to start, nothing to wait for but the progress that
+    /// comes back in the snapshot.
+    func buildStadium() {
+        send(["action": "buildStadium"])
     }
 
     /// Hands a slot to the engine's own save editor. The picture in the
