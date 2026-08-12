@@ -473,8 +473,13 @@ def by_alignment(us, de, where, anchors, found):
     for bank, labels in sorted(in_bank.items()):
         posts = sorted((where[l][1], anchors[l], l) for l in anchors
                        if where[l][0] == bank and anchors[l] // 0x4000 == bank)
+        # A bank with NO post at all was skipped entirely, and bank 42 is
+        # exactly that: 29 texts, not one of them named by a map table, so
+        # nothing was ever paired there. Both of its ends are known even so --
+        # the texts begin at the boundary and run to the end of the bank -- so
+        # the whole bank is one stretch and the alignment can do its work.
         if not posts:
-            continue
+            posts = [(0x3FFF, bank * 0x4000, None)]
         # THE ENDS OF THE FENCE, which is where a third of the misses were.
         #
         # Aligning only BETWEEN posts leaves whatever stands before the first
