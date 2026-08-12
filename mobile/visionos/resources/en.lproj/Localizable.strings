@@ -207,3 +207,15 @@
 "help.note.menuOnly" = "While a menu, a dialogue or a fight is showing on the device in your hand.";
 "help.note.dioramaOnly" = "Only where the world sits on a table in front of you.";
 "help.note.firstPersonOnly" = "Only when you are standing in the world.";
+
+/* The optional Pokémon Stadium cartridge, and the battle models built from it */
+"stadium.title" = "Pokémon Stadium";
+"stadium.import" = "Import…";
+"stadium.replace" = "Replace…";
+"stadium.absent" = "Optional. Supply your own Pokémon Stadium (US) cartridge dump and battles are fought with that game's models.";
+"stadium.pending" = "Cartridge found. The models are built once, on the next start.";
+"stadium.ready" = "Models are built. Choose them under Battles.";
+"stadium.cancelled" = "Import cancelled: %@";
+
+"Battles" = "Battles";
+"Standard" = "Standard";

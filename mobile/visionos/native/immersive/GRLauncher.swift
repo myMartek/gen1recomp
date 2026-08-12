@@ -46,6 +46,9 @@ struct GRLauncherView: View {
     @State private var importInto: String?
     @State private var showSavePicker = false
     @State private var romMessage = ""
+    /// The Pokémon Stadium cartridge picker, and whatever went wrong with it.
+    @State private var showStadiumPicker = false
+    @State private var stadiumMessage = ""
     /// A language the player has chosen but not yet paid for.
     ///
     /// The language is a mod, and mods merge once at load -- so changing it
@@ -452,6 +455,74 @@ struct GRLauncherView: View {
     /// The OPTIONS rows that mean anything before a game is running.
     ///
     /// Each is a menu, not a cycler: the Lua menu steps through values with
+    /// The Pokémon Stadium cartridge, and what it is worth.
+    ///
+    /// Under the settings rather than beside the Game Boy import, because it
+    /// is optional and because the row it unlocks -- Battles -- is directly
+    /// above it. When the models are built that row appears on its own; until
+    /// then this says what is missing and offers to take it, which is the
+    /// whole of the arrangement.
+    ///
+    /// Its picker hangs HERE, on this subview, for the reason the saves picker
+    /// hangs on its own: SwiftUI presents ONE .fileImporter per view, and a
+    /// second beside the ROM picker simply never appears.
+    private var stadiumRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("stadium.title")
+                    Text(stadiumDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Button(shell.stadium?.isInstalled == true
+                       ? tr("stadium.replace") : tr("stadium.import")) {
+                    showStadiumPicker = true
+                }
+                .buttonStyle(.borderless)
+            }
+            if !stadiumMessage.isEmpty {
+                Text(stadiumMessage)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .fileImporter(isPresented: $showStadiumPicker,
+                      allowedContentTypes: GRStadiumImport.contentTypes,
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { break }
+                // Only the copy is this side's business. Whether the file is a
+                // cartridge the mod can read is the MOD's answer, and it gives
+                // it on the next start -- which is also when the models are
+                // built, so there is nothing to report here in the meantime.
+                if let failure = GRStadiumImport.accept(url) {
+                    stadiumMessage = failure
+                } else {
+                    stadiumMessage = ""
+                }
+            case .failure(let error):
+                stadiumMessage = tr("stadium.cancelled", error.localizedDescription)
+            }
+        }
+    }
+
+    /// The three things this row can be saying, in the order a player meets
+    /// them: no cartridge, one waiting to be built from, models ready.
+    private var stadiumDetail: LocalizedStringKey {
+        if shell.stadium?.isInstalled == true { return "stadium.ready" }
+        if shell.stadium?.isPending == true { return "stadium.pending" }
+        return "stadium.absent"
+    }
+
     /// Left/Right because a d-pad is all it has, and reproducing that here
     /// would mean tapping a row six times to reach the seventh value.
     private var settingsList: some View {
@@ -500,6 +571,8 @@ struct GRLauncherView: View {
                 .padding(.vertical, 8)
             }
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+
+            stadiumRow
         }
         .sheet(isPresented: $showHelp) { GRHelpView() }
         .confirmationDialog(

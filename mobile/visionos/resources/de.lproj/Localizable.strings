@@ -206,3 +206,15 @@
 "help.note.menuOnly" = "Solange ein Menü, ein Dialog oder ein Kampf auf dem Gerät in deiner Hand steht.";
 "help.note.dioramaOnly" = "Nur wenn die Welt als Modell vor dir steht.";
 "help.note.firstPersonOnly" = "Nur wenn du selbst in der Welt stehst.";
+
+/* Die optionale Pokémon-Stadium-Cartridge und die Kampfmodelle daraus */
+"stadium.title" = "Pokémon Stadium";
+"stadium.import" = "Importieren…";
+"stadium.replace" = "Ersetzen…";
+"stadium.absent" = "Optional. Mit einem eigenen Abzug deiner Pokémon-Stadium-Cartridge (US) werden Kämpfe mit den Modellen aus diesem Spiel ausgetragen.";
+"stadium.pending" = "Cartridge gefunden. Die Modelle werden einmalig beim nächsten Start gebaut.";
+"stadium.ready" = "Modelle sind gebaut. Auswählbar unter Battles.";
+"stadium.cancelled" = "Import abgebrochen: %@";
+
+"Battles" = "Kämpfe";
+"Standard" = "Standard";

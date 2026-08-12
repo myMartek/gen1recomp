@@ -149,6 +149,22 @@ private struct GRShellState: Decodable {
     let `import`: GRImport?
     let debug: Bool?
     let booted: Bool?
+    let stadium: GRStadium?
+}
+
+/// What the mod knows about a Pokémon Stadium cartridge.
+///
+/// Two states, and the window has to tell them apart: `installed` means the
+/// battle models are built and the Battles row is live, `rom` means a file is
+/// sitting in `baseroms/` and the next start will build from it. Both false is
+/// the ordinary case -- no cartridge, no models, nothing to say beyond the
+/// offer to import one.
+struct GRStadium: Equatable, Decodable {
+    let installed: Bool?
+    let rom: Bool?
+
+    var isInstalled: Bool { installed == true }
+    var isPending: Bool { installed != true && rom == true }
 }
 
 @MainActor
@@ -188,6 +204,10 @@ final class GRShell {
     /// Whether the debug gate is open -- ten presses on a save slot, kept in
     /// the mod's own options. The window shows a developer's rows only then.
     private(set) var debug = false
+
+    /// The Pokémon Stadium cartridge, as the mod sees it. nil until the first
+    /// snapshot lands.
+    private(set) var stadium: GRStadium?
 
     private var pollTask: Task<Void, Never>?
 
@@ -242,6 +262,7 @@ final class GRShell {
         if decoded.import != importing { importing = decoded.import }
         if (decoded.booted ?? false) != booted { booted = decoded.booted ?? false }
         if (decoded.debug ?? false) != debug { debug = decoded.debug ?? false }
+        if decoded.stadium != stadium { stadium = decoded.stadium }
         if !hasState { hasState = true }
     }
 
