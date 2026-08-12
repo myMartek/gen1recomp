@@ -100,6 +100,86 @@ def lua_quote(s):
     return '"%s"' % out
 
 
+RAM_PH = re.compile(r"\{RAM:\w+\}")
+
+
+def believable(eng, ger):
+    """Whether a German line found by the SECOND pass is really this label's.
+
+    That pass pairs by the address of the pointer SITE, and where the German
+    build's code has moved, the same address holds a different site -- which
+    yields a real German line that belongs to another label. Measured against
+    the first pass's proven pairs: 46 of 328 came out wrong that way, and a
+    wrong line is worse than an English one, because an empty entry falls back
+    to English and reads correctly while a wrong one silently lies.
+
+    So a candidate has to look like a TRANSLATION of the English at that label.
+    Wording cannot be compared across languages, but these survive it:
+
+      * the RAM placeholders, exactly -- a line that greets the player by name
+        greets them by name in both, and this alone caught most of the wrong
+        pairs
+      * the paragraph and scroll breaks, exactly: they are the shape of the
+        text box, and the German build kept them
+      * POKé, which is one byte and appears where the word does
+      * length, within a band -- German runs longer than English, but not
+        three times longer
+
+    On the sample that can be checked this keeps 113 and gets 3 wrong. That is
+    the floor of the method: those three are the right shape and the wrong
+    text, and no rule made of structure can see it.
+    """
+    if not ger or re.search(r"\{[0-9A-F]{2}\}", ger):
+        return False
+    if sorted(RAM_PH.findall(eng)) != sorted(RAM_PH.findall(ger)):
+        return False
+    if eng.count("\x0c") != ger.count("\x0c"):
+        return False
+    if eng.count("\x0b") != ger.count("\x0b"):
+        return False
+    if eng.count("POKé") != ger.count("POKé"):
+        return False
+    if not eng:
+        return False
+    return 0.6 <= len(ger) / len(eng) <= 2.2
+
+
+def by_pointer_site(us, de, by_address, where, found):
+    """Second pass: everything the map tables cannot reach.
+
+    The first pass walks a map's text pointer table, which only ever reaches
+    the texts a MAP owns -- 344 of 2582. The rest (battle text, the Pokedex,
+    menus, everything a script names directly) is referenced from code, and
+    code has no table to walk.
+
+    What it does have is position. Both cartridges are the same build, so the
+    TX_FAR site that names a text sits at the same ROM offset in each: read the
+    far pointer there out of the German cartridge and it is the same line in
+    the other language. Where the German build's code has MOVED, that is no
+    longer true and the site belongs to something else -- which is what
+    believable() is for.
+
+    The first pass wins every label it filled: it followed a structure rather
+    than an assumption, and where the two disagree it is the one to trust.
+    """
+    added = 0
+    seen = set()
+    for i in range(len(us) - 4):
+        if us[i] != TX_FAR or de[i] != TX_FAR:
+            continue
+        label = by_address.get((us[i + 3], us[i + 1] | (us[i + 2] << 8)))
+        if not label or label in seen or label in found:
+            continue
+        seen.add(label)
+        eng = decode(us, offset(*where[label]))
+        ger = decode(de, offset(de[i + 3], de[i + 1] | (de[i + 2] << 8)))
+        if not believable(eng, ger):
+            continue
+        found[label] = ger
+        added += 1
+    return added
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
@@ -113,9 +193,11 @@ def main():
 
     # Every _XText the US build knows, by where it sits.
     by_address = {}
-    for label, where in symbols.items():
-        if label.startswith("_") and isinstance(where, list) and len(where) == 2:
-            by_address[(where[0], where[1])] = label
+    at = {}
+    for label, place in symbols.items():
+        if label.startswith("_") and isinstance(place, list) and len(place) == 2:
+            by_address[(place[0], place[1])] = label
+            at[label] = (place[0], place[1])
 
     found, asm, unknown = {}, 0, 0
     for map_name, texts in pointers.items():
@@ -146,6 +228,9 @@ def main():
             far = de[ad + 1] | (de[ad + 2] << 8)
             found[label] = decode(de, offset(far_bank, far))
 
+    through_tables = len(found)
+    through_sites = by_pointer_site(us, de, by_address, at, found)
+
     path = mod / "lang" / "dialogue.lua"
     text = path.read_text()
     filled = 0
@@ -163,8 +248,10 @@ def main():
     out = re.sub(r'\["([^"]+)"\]\s*=\s*"(?:[^"\\]|\\.)*",', swap, text)
     path.write_text(out)
     print("matched %d labels through the US cartridge" % len(found))
-    print("  filled            %d" % filled)
-    print("  inline script     %d (not text)" % asm)
+    print("  through map tables        %d" % through_tables)
+    print("  through pointer sites     %d (structure-checked)" % through_sites)
+    print("  filled                    %d" % filled)
+    print("  inline script             %d (not text)" % asm)
     print("  slot with no known label  %d" % unknown)
 
 
