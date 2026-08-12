@@ -113,6 +113,38 @@ end
 -- has to name the one it means.
 local LANGUAGE_MOD = "deutsch"
 
+-- ---- the Pokemon Stadium battle models
+--
+-- The mod builds those models out of a Pokemon Stadium cartridge the player
+-- supplies, and writes a marker next to the finished packs. Both paths belong
+-- to the mod (lib/StadiumInstall) and are named here rather than asked for:
+-- the mod is not loaded while the launcher is up, so there is nobody to ask.
+--
+-- Same arrangement as the Game Boy ROM, and for the same reason: no cartridge
+-- data ships, so until the player supplies one there is nothing behind the
+-- setting and the row is not offered.
+local STADIUM_ROM_DIR = "baseroms"
+local STADIUM_MARKER = "dramatic_shape/stadium/pack.info"
+
+local function stadiumInstalled()
+  local ok, info = pcall(love.filesystem.getInfo, STADIUM_MARKER, "file")
+  return (ok and info ~= nil) and true or false
+end
+
+-- The cartridge waiting to be built from, if one is. That is the state
+-- between the import and the next start -- the window says so, because a
+-- player who just handed over a 64 MB file and sees nothing change has been
+-- told nothing.
+local function stadiumRomFile()
+  local ok, items = pcall(love.filesystem.getDirectoryItems, STADIUM_ROM_DIR)
+  if not ok then return nil end
+  for _, f in ipairs(items or {}) do
+    local e = tostring(f):lower():match("%.(%w+)$")
+    if e == "z64" or e == "n64" or e == "v64" then return f end
+  end
+  return nil
+end
+
 local function buildSettings()
   if SETTINGS then return SETTINGS end
   local ok, built = pcall(function()
@@ -199,6 +231,42 @@ local function buildSettings()
             options.mods[LANGUAGE_MOD] = (value == "de")
           end,
         },
+        -- WHAT STANDS IN A FIGHT, once there is something to choose between.
+        --
+        -- The mod's own 3D-BTL ladder, written the way the View row writes
+        -- the voxel one -- and it has to be here, because that row is hidden
+        -- from the in-game menu while VR is on (it decides nothing there),
+        -- which on this build is always. Without this the STADIUM rung would
+        -- exist and be unreachable.
+        --
+        -- `when` keeps it out of the window entirely until a cartridge has
+        -- been built from: an option that can be picked and changes nothing
+        -- reads as a broken app, and the import row above it is what the
+        -- player needs first.
+        --
+        -- Carried as STRINGS rather than the ladder's own values, which are
+        -- `true` and "stadium" -- one JSON field with two types is a trap for
+        -- the window that has to decode it. The mapping is right here, in
+        -- both directions, and nowhere else.
+        {
+          id = "battles", label = "Battles", default = "standard",
+          choices = {
+            { value = "standard", label = "Standard" },
+            { value = "stadium", label = "Pokémon Stadium" },
+          },
+          when = stadiumInstalled,
+          get = function(options)
+            local m = options.modOptions and options.modOptions.DRAMATIC_SHAPE
+            return (m and m.battles == "stadium") and "stadium" or "standard"
+          end,
+          set = function(options, value)
+            options.modOptions = options.modOptions or {}
+            options.modOptions.DRAMATIC_SHAPE =
+              options.modOptions.DRAMATIC_SHAPE or {}
+            options.modOptions.DRAMATIC_SHAPE.battles =
+              (value == "stadium") and "stadium" or true
+          end,
+        },
       }
     end
 
@@ -232,11 +300,17 @@ local function settingsSnapshot()
   options = okO and options or {}
   local out = {}
   for _, s in ipairs(buildSettings()) do
+    -- A row may not exist yet. `when` is asked HERE, on every publish, and
+    -- not in buildSettings: that list is built once and cached, so a row
+    -- that only appears after the player supplies a cartridge would never
+    -- turn up in a list built before they did.
+    if not (s.when and not s.when()) then
     local v = s.get and s.get(options) or options[s.id]
     if v == nil then v = s.default end
     out[#out + 1] = {
       id = s.id, label = s.label, value = v, choices = s.choices,
     }
+    end
   end
   return out
 end
@@ -389,6 +463,14 @@ local function snapshot()
            -- watch the file's timestamp -- and publish() writes only on
            -- change, so that timestamp says nothing at all.
            editing = NativeShell.editing == true,
+           -- The Pokemon Stadium cartridge, in the two states the window has
+           -- to tell apart: the models are BUILT (the Battles row is there),
+           -- or a file is sitting in baseroms/ and the next start will build
+           -- from it. Between those two the player has handed over a large
+           -- file and nothing visible has happened yet, which is exactly when
+           -- an app has to say something.
+           stadium = { installed = stadiumInstalled(),
+                       rom = stadiumRomFile() ~= nil },
            ready = true }
 end
 
