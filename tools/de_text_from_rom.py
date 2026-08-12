@@ -241,21 +241,37 @@ def by_dex_measurements(us, de, symbols, by_address, found):
     bank, addr = place
     base = offset(bank, addr)
 
-    ours, theirs = {}, {}
+    ours = {}
     for n in range(1, 191):          # internal index, which is not the dex number
         e = base + (n - 1) * 2
         if e + 1 >= len(us):
             break
         pu = us[e] | (us[e + 1] << 8)
-        pd = de[e] | (de[e + 1] << 8)
         if 0x4000 <= pu < 0x8000:
             got = dex_entry(us, offset(bank, pu), False)
             if got:
                 ours[n] = got
-        if 0x4000 <= pd < 0x8000:
-            got = dex_entry(de, offset(bank, pd), True)
-            if got:
-                theirs[n] = got
+
+    # The GERMAN entries are found by SWEEPING the bank rather than by walking
+    # that release's table, which is reordered and, for its last two slots,
+    # holds addresses outside the bank entirely -- Rhydon's and Kangaskhan's
+    # entries are in there, the table simply does not lead to them. The
+    # entries have a shape of their own (a name, a terminator, three bytes of
+    # measurements, then the TX_FAR that names the text), and that shape is
+    # what this looks for. Order does not matter: the pairing is by size.
+    theirs, seen_at = {}, 0
+    for at in range(bank * 0x4000, (bank + 1) * 0x4000 - 8):
+        if de[at] != 0x50 or de[at + 4] != TX_FAR:
+            continue
+        far = (de[at + 7], de[at + 5] | (de[at + 6] << 8))
+        if not (0x4000 <= far[1] < 0x8000):
+            continue
+        height = de[at + 1] / 10.0
+        weight = (de[at + 2] | (de[at + 3] << 8)) / 10.0
+        if not (0.1 <= height <= 25.0 and 0.1 <= weight <= 1000.0):
+            continue
+        seen_at += 1
+        theirs[seen_at] = ("", height, weight, far)
 
     def apart(u, d):
         return abs(u[1] - d[1]) / 0.1 + abs(u[2] - d[2]) / max(1.0, u[2] * 0.05)
