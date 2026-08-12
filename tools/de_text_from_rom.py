@@ -398,22 +398,19 @@ def by_alignment(us, de, where, anchors, found):
         # THE ENDS OF THE FENCE, which is where a third of the misses were.
         #
         # Aligning only BETWEEN posts leaves whatever stands before the first
-        # and after the last untouched -- 491 texts, more than the segments in
-        # the middle ever lost. Both ends are reachable from the post next to
-        # them: the German texts lie end to end, so walking back over one
-        # terminator per English text ahead of the first post finds where that
-        # run begins, and the last post simply runs to the end of its bank.
+        # and after the last untouched. Both ends are known without a search:
+        # every one of the twelve text banks begins its texts AT the bank
+        # boundary, in both releases -- bank 40 opens with Koga's parting
+        # advice in each -- so the head boundary is the boundary itself.
+        #
+        # This used to walk backwards over one terminator per English text
+        # ahead of the first post. That is fragile where it matters most: bank
+        # 40 holds 206 texts and only 9 posts, all of them at the far end, so
+        # the walk had to step back 159 times without a single misstep. It did
+        # not, and the whole Fuchsia gym came out empty.
         ahead = [a for a, _ in in_bank[bank] if a < posts[0][0]]
         if ahead:
-            start = posts[0][1]
-            for _ in ahead:
-                j = start - 2
-                while j > bank * 0x4000 and de[j] not in (0x50, 0x57, 0x58):
-                    j -= 1
-                if j <= bank * 0x4000:
-                    break
-                start = j + 1
-            posts.insert(0, (min(ahead) - 1, start, None))
+            posts.insert(0, (min(ahead) - 1, bank * 0x4000, None))
         posts.append((0x8000, (bank + 1) * 0x4000, None))
         for k in range(len(posts) - 1):
             ua0, da0, _ = posts[k]
@@ -422,7 +419,15 @@ def by_alignment(us, de, where, anchors, found):
                 continue
             english = [(l, decode(us, offset(bank, a)))
                        for a, l in in_bank[bank] if ua0 < a < ua1]
-            german = [(o, decode(de, o)) for o in text_runs(de, da0, da1)[1:]]
+            # The first run in a stretch is the POST itself and is already
+            # paired -- except at a bank boundary, where the post is the
+            # boundary rather than a text, and the first run is the bank's
+            # first text. Dropping it there would lose one text per bank, and
+            # in bank 40 that text is the one the whole gym hangs off.
+            runs = text_runs(de, da0, da1)
+            if da0 != bank * 0x4000:
+                runs = runs[1:]
+            german = [(o, decode(de, o)) for o in runs]
             if not english or not german:
                 continue
             # The grid is n*m cells. This was 20000 and that was far too shy:
