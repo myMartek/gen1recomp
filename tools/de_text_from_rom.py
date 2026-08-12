@@ -377,6 +377,28 @@ def by_alignment(us, de, where, anchors, found):
     for bank, labels in sorted(in_bank.items()):
         posts = sorted((where[l][1], anchors[l], l) for l in anchors
                        if where[l][0] == bank and anchors[l] // 0x4000 == bank)
+        if not posts:
+            continue
+        # THE ENDS OF THE FENCE, which is where a third of the misses were.
+        #
+        # Aligning only BETWEEN posts leaves whatever stands before the first
+        # and after the last untouched -- 491 texts, more than the segments in
+        # the middle ever lost. Both ends are reachable from the post next to
+        # them: the German texts lie end to end, so walking back over one
+        # terminator per English text ahead of the first post finds where that
+        # run begins, and the last post simply runs to the end of its bank.
+        ahead = [a for a, _ in in_bank[bank] if a < posts[0][0]]
+        if ahead:
+            start = posts[0][1]
+            for _ in ahead:
+                j = start - 2
+                while j > bank * 0x4000 and de[j] not in (0x50, 0x57, 0x58):
+                    j -= 1
+                if j <= bank * 0x4000:
+                    break
+                start = j + 1
+            posts.insert(0, (min(ahead) - 1, start, None))
+        posts.append((0x8000, (bank + 1) * 0x4000, None))
         for k in range(len(posts) - 1):
             ua0, da0, _ = posts[k]
             ua1, da1, _ = posts[k + 1]
