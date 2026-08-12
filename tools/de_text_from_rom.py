@@ -284,6 +284,121 @@ def by_dex_measurements(us, de, symbols, by_address, found):
     return added
 
 
+
+# ------------------------------------------------------------------ pass four
+#
+# Aligning the two cartridges' texts, which is what finally reaches the ones no
+# table names.
+#
+# The texts of a bank lie one after another in both releases, in the same
+# order -- checked: of the ten banks holding two or more proven pairs, nine
+# keep it. So between two pairs we already trust, the German texts in between
+# ARE the English ones in between, and the only question is which is which
+# when the counts differ, because one release inlined a line the other did not.
+#
+# That is a sequence alignment, so it is done as one (Needleman-Wunsch) rather
+# than by counting. The score asks the same structural questions believable()
+# does -- placeholders, box breaks, POKe, length -- and a gap costs enough that
+# dropping a text is only worth it when the alternative is worse.
+#
+# Measured by holding back every second anchor and predicting it: 164 of 165
+# land exactly where the cartridge says they do. That is a real measurement of
+# this pass rather than of the anchors, because a held-back anchor is not a
+# boundary and gets no say in its own answer.
+
+GAP = -3
+
+
+def similarity(eng, ger):
+    if not ger:
+        return -4
+    s = 3 if sorted(RAM_PH.findall(eng)) == sorted(RAM_PH.findall(ger)) else -4
+    s += 2 if eng.count("\x0c") == ger.count("\x0c") else -2
+    s += 1 if eng.count("\x0b") == ger.count("\x0b") else -1
+    s += 1 if eng.count("POK\u00e9") == ger.count("POK\u00e9") else -2
+    if eng:
+        ratio = len(ger) / len(eng)
+        s += 2 if 0.7 <= ratio <= 1.9 else (1 if 0.5 <= ratio <= 2.6 else -2)
+    if re.search(r"\{[0-9A-F]{2}\}", ger):
+        s -= 3
+    return s
+
+
+def align(english, german):
+    """Needleman-Wunsch over two lists of (key, text). Returns matched keys."""
+    n, m = len(english), len(german)
+    grid = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        grid[i][0] = grid[i - 1][0] + GAP
+    for j in range(1, m + 1):
+        grid[0][j] = grid[0][j - 1] + GAP
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            grid[i][j] = max(grid[i - 1][j - 1] + similarity(english[i - 1][1],
+                                                             german[j - 1][1]),
+                             grid[i - 1][j] + GAP, grid[i][j - 1] + GAP)
+    out, i, j = [], n, m
+    while i > 0 and j > 0:
+        diag = grid[i - 1][j - 1] + similarity(english[i - 1][1], german[j - 1][1])
+        if grid[i][j] == diag:
+            out.append((english[i - 1][0], german[j - 1][0]))
+            i -= 1
+            j -= 1
+        elif grid[i][j] == grid[i - 1][j] + GAP:
+            i -= 1
+        else:
+            j -= 1
+    return out[::-1]
+
+
+def text_runs(rom, start, stop):
+    """Where each text begins between two offsets: they are laid end to end."""
+    out, i = [], start
+    while i < stop:
+        out.append(i)
+        j = i + (1 if rom[i] == 0x00 else 0)
+        while j < stop and rom[j] not in (0x50, 0x57, 0x58):
+            j += 1
+        if j >= stop:
+            break
+        i = j + 1
+    return out
+
+
+def by_alignment(us, de, where, anchors, found):
+    """Fourth pass: everything between two proven pairs, aligned."""
+    in_bank = {}
+    for label, (bank, addr) in where.items():
+        in_bank.setdefault(bank, []).append((addr, label))
+    for bank in in_bank:
+        in_bank[bank].sort()
+
+    added = 0
+    for bank, labels in sorted(in_bank.items()):
+        posts = sorted((where[l][1], anchors[l], l) for l in anchors
+                       if where[l][0] == bank and anchors[l] // 0x4000 == bank)
+        for k in range(len(posts) - 1):
+            ua0, da0, _ = posts[k]
+            ua1, da1, _ = posts[k + 1]
+            if da1 <= da0:
+                continue
+            english = [(l, decode(us, offset(bank, a)))
+                       for a, l in in_bank[bank] if ua0 < a < ua1]
+            german = [(o, decode(de, o)) for o in text_runs(de, da0, da1)[1:]]
+            if not english or not german:
+                continue
+            # The grid is n*m cells; a pathological segment is not worth the
+            # seconds, and there is another pass behind this one.
+            if len(english) * len(german) > 20000:
+                continue
+            for label, at in align(english, german):
+                if label in found:
+                    continue
+                found[label] = decode(de, at)
+                added += 1
+    return added
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
@@ -304,6 +419,9 @@ def main():
             at[label] = (place[0], place[1])
 
     found, asm, unknown = {}, 0, 0
+    # where each PROVEN pair's German text sits: the posts the
+    # alignment pass runs its fence between
+    anchors = {}
     for map_name, texts in pointers.items():
         header = symbols.get(map_name + "_h")
         if not header:
@@ -330,12 +448,14 @@ def main():
                 continue
             far_bank = de[ad + 3]
             far = de[ad + 1] | (de[ad + 2] << 8)
-            found[label] = decode(de, offset(far_bank, far))
+            anchors[label] = offset(far_bank, far)
+            found[label] = decode(de, anchors[label])
 
     through_tables = len(found)
     # Before the site pass, because it is the stronger claim: a pairing
     # this one makes is one the guessier pass never gets asked about.
     through_dex = by_dex_measurements(us, de, symbols, by_address, found)
+    through_align = by_alignment(us, de, at, anchors, found)
     through_sites = by_pointer_site(us, de, by_address, at, found)
 
     path = mod / "lang" / "dialogue.lua"
@@ -357,6 +477,7 @@ def main():
     print("matched %d labels through the US cartridge" % len(found))
     print("  through map tables        %d" % through_tables)
     print("  through dex measurements  %d" % through_dex)
+    print("  through alignment         %d" % through_align)
     print("  through pointer sites     %d (structure-checked)" % through_sites)
     print("  filled                    %d" % filled)
     print("  inline script             %d (not text)" % asm)
