@@ -180,6 +180,110 @@ def by_pointer_site(us, de, by_address, where, found):
     return added
 
 
+def dex_entry(rom, at, metric):
+    """One Pokedex entry: its category, its measurements, and where its text is.
+
+    The layout is category string, 0x50, the measurements, then the TX_FAR that
+    names the description. The measurement field is the one place the two
+    releases differ in SHAPE: the US build stores feet, inches and tenths of a
+    pound, the German one decimetres and tenths of a kilo, which is three bytes
+    where the other has four. So the far pointer is found by where it is, not
+    by counting from the front.
+    """
+    i = at
+    while i < at + 24 and rom[i] != 0x50:
+        i += 1
+    if i >= at + 24:
+        return None
+    category = "".join(CHARMAP.get(b, "?") for b in rom[at:i])
+    p = i + 1
+    if metric:
+        height = rom[p] / 10.0
+        weight = (rom[p + 1] | (rom[p + 2] << 8)) / 10.0
+        q = p + 3
+    else:
+        height = (rom[p] * 12 + rom[p + 1]) * 0.0254
+        weight = (rom[p + 2] | (rom[p + 3] << 8)) * 0.045359237
+        q = p + 4
+    if rom[q] != TX_FAR:
+        return None
+    return category, height, weight, (rom[q + 3], rom[q + 1] | (rom[q + 2] << 8))
+
+
+def by_dex_measurements(us, de, symbols, by_address, found):
+    """Third pass: the Pokedex, paired on how big each Pokemon is.
+
+    The dex has a real pointer table -- PokedexEntryPointers -- and a table is
+    exactly what the first pass trusts. This one cannot be trusted that way:
+    the German build REORDERED it. Slot 1 is Rhydon in the US cartridge
+    ("DRILL") and something else entirely in the German one, so pairing slot to
+    slot would give every Pokemon another one's entry.
+
+    What does not move between languages is how tall and how heavy each one is.
+    The German build stores those metrically and the US build imperially, but
+    they describe the same animal, so converting one gives the other back to
+    within rounding -- and height with weight is close enough to a fingerprint
+    that 149 of 151 fall out uniquely.
+
+    Not looked up one at a time, though: singly, 66 of them have more than one
+    candidate inside any sensible tolerance. It is an ASSIGNMENT -- every US
+    entry gets exactly one German entry and no German entry is used twice --
+    so it is solved by repeatedly taking the pairs that are each other's
+    closest match. That leaves 149 paired and no German entry spare.
+
+    The category strings are not used to decide anything, only to check: the
+    six widest-apart pairs it produces are Zubat/FLEDERMAUS, Clefairy/FEE,
+    Sandshrew/MAUS, Wigglytuff/BALLON, Dragonair/DRACHE and Exeggcute/EI.
+    """
+    place = symbols.get("PokedexEntryPointers")
+    if not place:
+        return 0
+    bank, addr = place
+    base = offset(bank, addr)
+
+    ours, theirs = {}, {}
+    for n in range(1, 191):          # internal index, which is not the dex number
+        e = base + (n - 1) * 2
+        if e + 1 >= len(us):
+            break
+        pu = us[e] | (us[e + 1] << 8)
+        pd = de[e] | (de[e + 1] << 8)
+        if 0x4000 <= pu < 0x8000:
+            got = dex_entry(us, offset(bank, pu), False)
+            if got:
+                ours[n] = got
+        if 0x4000 <= pd < 0x8000:
+            got = dex_entry(de, offset(bank, pd), True)
+            if got:
+                theirs[n] = got
+
+    def apart(u, d):
+        return abs(u[1] - d[1]) / 0.1 + abs(u[2] - d[2]) / max(1.0, u[2] * 0.05)
+
+    free_u, free_d, paired = set(ours), set(theirs), {}
+    while free_u and free_d:
+        closest_u = {n: min(free_d, key=lambda k: apart(ours[n], theirs[k]))
+                     for n in free_u}
+        closest_d = {k: min(free_u, key=lambda n: apart(ours[n], theirs[k]))
+                     for k in free_d}
+        mutual = [(n, k) for n, k in closest_u.items() if closest_d.get(k) == n]
+        if not mutual:
+            break
+        for n, k in mutual:
+            paired[n] = k
+            free_u.discard(n)
+            free_d.discard(k)
+
+    added = 0
+    for n, k in paired.items():
+        label = by_address.get(ours[n][3])
+        if not label or label in found:
+            continue
+        found[label] = decode(de, offset(*theirs[k][3]))
+        added += 1
+    return added
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
@@ -229,6 +333,9 @@ def main():
             found[label] = decode(de, offset(far_bank, far))
 
     through_tables = len(found)
+    # Before the site pass, because it is the stronger claim: a pairing
+    # this one makes is one the guessier pass never gets asked about.
+    through_dex = by_dex_measurements(us, de, symbols, by_address, found)
     through_sites = by_pointer_site(us, de, by_address, at, found)
 
     path = mod / "lang" / "dialogue.lua"
@@ -249,6 +356,7 @@ def main():
     path.write_text(out)
     print("matched %d labels through the US cartridge" % len(found))
     print("  through map tables        %d" % through_tables)
+    print("  through dex measurements  %d" % through_dex)
     print("  through pointer sites     %d (structure-checked)" % through_sites)
     print("  filled                    %d" % filled)
     print("  inline script             %d (not text)" % asm)
