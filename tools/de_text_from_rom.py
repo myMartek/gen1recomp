@@ -270,25 +270,105 @@ def by_dex_measurements(us, de, symbols, by_address, found):
         weight = (de[at + 2] | (de[at + 3] << 8)) / 10.0
         if not (0.1 <= height <= 25.0 and 0.1 <= weight <= 1000.0):
             continue
+        # the category, which is the run of characters ending at this
+        # terminator -- read for the dictionary below, never to decide a
+        # pairing on its own
+        back = at - 1
+        while back > bank * 0x4000 and de[back] not in (0x50, 0x57, 0x58):
+            back -= 1
+        category = "".join(CHARMAP.get(b, "?") for b in de[back + 1:at])
         seen_at += 1
-        theirs[seen_at] = ("", height, weight, far)
+        theirs[seen_at] = (category, height, weight, far)
 
     def apart(u, d):
         return abs(u[1] - d[1]) / 0.1 + abs(u[2] - d[2]) / max(1.0, u[2] * 0.05)
 
-    free_u, free_d, paired = set(ours), set(theirs), {}
-    while free_u and free_d:
-        closest_u = {n: min(free_d, key=lambda k: apart(ours[n], theirs[k]))
-                     for n in free_u}
-        closest_d = {k: min(free_u, key=lambda n: apart(ours[n], theirs[k]))
-                     for k in free_d}
-        mutual = [(n, k) for n, k in closest_u.items() if closest_d.get(k) == n]
-        if not mutual:
-            break
-        for n, k in mutual:
-            paired[n] = k
-            free_u.discard(n)
-            free_d.discard(k)
+    # ---- the categories, as a dictionary this builds for itself
+    #
+    # Height and weight alone put Jigglypuff and Oddish within a rounding error
+    # of each other (0.5 m against 0.5 m, 5.5 kg against 5.4 kg), and the
+    # assignment then swaps them -- as it does Psyduck with Machop, Vulpix with
+    # Kakuna. Every one of those had to be corrected by hand after every run.
+    #
+    # Each entry also carries a CATEGORY, and those are translated: DRILL is
+    # BOHRER, FAIRY is FEE. Translated words cannot be compared, but they can
+    # be LEARNED -- from the pairs the measurements settle on their own, by a
+    # wide margin. So the assignment runs twice: once on size alone, then again
+    # with what the first run taught it about which category answers which.
+    def assign(cost):
+        free_u, free_d, out = set(ours), set(theirs), {}
+        while free_u and free_d:
+            closest_u = {n: min(free_d, key=lambda k: cost(n, k)) for n in free_u}
+            closest_d = {k: min(free_u, key=lambda n: cost(n, k)) for k in free_d}
+            mutual = [(n, k) for n, k in closest_u.items() if closest_d.get(k) == n]
+            if not mutual:
+                break
+            for n, k in mutual:
+                out[n] = k
+                free_u.discard(n)
+                free_d.discard(k)
+        return out
+
+    rough = assign(lambda n, k: apart(ours[n], theirs[k]))
+
+    votes = {}
+    for n, k in rough.items():
+        # only the pairs no other candidate comes close to get a vote
+        others = sorted(apart(ours[n], theirs[j]) for j in theirs if j != k)
+        if others and others[0] - apart(ours[n], theirs[k]) < 0.5:
+            continue
+        votes.setdefault(ours[n][0], {}).setdefault(theirs[k][0], 0)
+        votes[ours[n][0]][theirs[k][0]] += 1
+    answers = {cat: max(seen, key=seen.get) for cat, seen in votes.items()}
+
+    def with_category(n, k):
+        want = answers.get(ours[n][0])
+        penalty = 0.0 if want is None or want == theirs[k][0] else 6.0
+        return apart(ours[n], theirs[k]) + penalty
+
+    paired = assign(with_category)
+
+    # ---- the coin flips, settled by reading them
+    #
+    # Two pairs are identical in both of the things this pass can measure:
+    # Pidgey and Spearow are each 0.3 m and within 200 g of each other, and
+    # Kingler and Nidoqueen are both 1.3 m at 60 kg. Their categories are no
+    # help either -- TINY BIRD answers KLEINVOGEL for both birds, and PINCER
+    # and DRILL each appear once, so the dictionary above never gets a
+    # confident vote to learn them from. Whichever way the assignment falls is
+    # a coin flip, and it fell differently on consecutive runs.
+    #
+    # So they are pinned, from having READ them: the German entry for Pidgey
+    # is the one about kicking up sand, Spearow's is the one about eating
+    # insects in the grass, and so on. This is not a guess encoded as data --
+    # it is the one thing in this file that was checked by a person, and the
+    # check is what makes it worth keeping.
+    verified = {
+        "_PidgeyDexEntry": "Sand",
+        "_SpearowDexEntry": "Insekten",
+        "_KinglerDexEntry": "Schere",
+        "_NidoqueenDexEntry": "Panzer",
+    }
+    by_label = {by_address.get(ours[n][3]): k for n, k in paired.items()
+                if by_address.get(ours[n][3])}
+    for label, marker in verified.items():
+        k = by_label.get(label)
+        if k is None:
+            continue
+        if marker in decode(de, offset(*theirs[k][3])):
+            continue
+        for other, want in verified.items():
+            j = by_label.get(other)
+            if j is None or other == label:
+                continue
+            if marker in decode(de, offset(*theirs[j][3])):
+                for n, kk in list(paired.items()):
+                    if by_address.get(ours[n][3]) == label:
+                        paired[n] = j
+                    elif by_address.get(ours[n][3]) == other:
+                        paired[n] = k
+                by_label[label], by_label[other] = j, k
+                break
 
     added = 0
     for n, k in paired.items():
