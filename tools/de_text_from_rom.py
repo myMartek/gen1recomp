@@ -78,11 +78,49 @@ def offset(bank, addr):
     return bank * 0x4000 + (addr - 0x4000 if addr >= 0x4000 else addr)
 
 
+# ---- the print-from-memory command
+#
+# Most names in a text arrive through a single byte (0x59 is the name buffer,
+# see RAM above). Some arrive through a COMMAND instead: 0x01 followed by the
+# two-byte address to print from. The item effects are full of it -- "{MON} was
+# cured of poison!" is that command and then the words.
+#
+# Which address means which name is not guessed here. The engine writes its own
+# English catalog when a cartridge is imported (data/generated/text.lua), and
+# that catalog spells these out: the text this reader sees as 01 6D CD is
+# "{RAM:wNameBuffer} was cured of poison!" there. Every entry below was read
+# off that file, agreed on by between one and twenty-one texts, with no
+# disagreement anywhere.
+TEXT_COMMAND = 0x01
+COMMAND_NAMES = {
+    0xCD6D: "wNameBuffer",
+    0xCF4B: "wStringBuffer",
+    0xCFDA: "wEnemyMonNick",
+    0xD009: "wBattleMonNick",
+    0xD04A: "wTrainerName",
+    0xD887: "wLinkEnemyTrainerName",
+    0xDE06: "wBoxMonNicks",
+}
+
+
 def decode(rom, at, limit=2048):
     out = []
-    for b in rom[at:at + limit]:
+    i = at
+    stop = at + limit
+    while i < stop:
+        b = rom[i]
         if b in (0x50, 0x57, 0x58):
-            return "".join(out)
+            break
+        if b == TEXT_COMMAND and i + 2 < stop:
+            where = rom[i + 1] | (rom[i + 2] << 8)
+            name = COMMAND_NAMES.get(where)
+            # An address nobody has named stays unreadable ON PURPOSE: the
+            # catalog writer drops any line still holding {XX}, and a line that
+            # prints from the wrong place is worse than an English one.
+            out.append("{RAM:%s}" % name if name else "{%02X}{%02X}{%02X}"
+                       % (b, rom[i + 1], rom[i + 2]))
+            i += 3
+            continue
         if b in RAM:
             out.append(RAM[b])
         elif b in CTRL:
@@ -91,6 +129,7 @@ def decode(rom, at, limit=2048):
                 out.append(piece)
         else:
             out.append(CHARMAP.get(b, "{%02X}" % b))
+        i += 1
     return "".join(out)
 
 
