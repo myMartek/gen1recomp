@@ -136,8 +136,16 @@ struct GRApp: App {
 
     var body: some Scene {
         WindowGroup(id: GRAppModel.launcherWindowID) {
-            GRLauncherView()
-                .environment(model)
+            // The controller page stands IN PLACE of the launcher when it is
+            // asked for, rather than beside it: it is opened to learn a pad,
+            // not on the way to playing, and the engine behind the launcher
+            // would otherwise be booting a world nobody is going to look at.
+            if GRControllerSetupView.wanted {
+                GRControllerSetupView()
+            } else {
+                GRLauncherView()
+                    .environment(model)
+            }
         }
         // Portrait: the game frame is 1080x1920, and a landscape window
         // letterboxes it down to a stamp.
