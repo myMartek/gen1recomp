@@ -58,6 +58,7 @@ struct GRLauncherView: View {
     /// the meantime (its binding reads the shell, which has not been told).
     @State private var pendingLanguage: GRSetting.Choice?
     @State private var showHelp = false
+    @State private var showControllerSetup = false
     @State private var pads = GRControllers()
     /// The save the player asked to export; presenting the share sheet.
     @State private var exportURL: URL?
@@ -562,6 +563,18 @@ struct GRLauncherView: View {
                     Label(tr("help.title"), systemImage: "questionmark.circle")
                 }
                 .buttonStyle(.borderless)
+                // The controller page, reachable without a launch flag.
+                //
+                // It began as flag-only, ported that way from the SM64 port --
+                // but a flag is set from a Mac over a tunnel, and the tunnel is
+                // exactly what is not there when somebody sits down with a new
+                // pad. A button costs one line in a row nobody reads twice.
+                Button {
+                    showControllerSetup = true
+                } label: {
+                    Label("Controller", systemImage: "gamecontroller")
+                }
+                .buttonStyle(.borderless)
             }
 
             ForEach(shell.settings) { setting in
@@ -598,6 +611,7 @@ struct GRLauncherView: View {
             stadiumRow
         }
         .sheet(isPresented: $showHelp) { GRHelpView() }
+        .sheet(isPresented: $showControllerSetup) { GRControllerSetupView() }
         .confirmationDialog(
             tr("Change the language?"),
             isPresented: Binding(get: { pendingLanguage != nil },
